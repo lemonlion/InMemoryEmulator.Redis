@@ -26,6 +26,7 @@ internal sealed class HashCommands : ICommandHandler
             "HSETNX" => HSetNx(context),
             "HRANDFIELD" => HRandField(context),
             "HSCAN" => HScan(context),
+            "HSTRLEN" => HStrLen(context),
             _ => ValueTask.FromResult<RespValue>(new RespValue.Error("ERR", $"unknown command '{context.CommandName}'"))
         };
     }
@@ -287,5 +288,16 @@ internal sealed class HashCommands : ICommandHandler
             RespValue.FromBulkString(nextCursor.ToString()),
             new RespValue.Array(results.ToArray())
         }));
+    }
+
+    private static ValueTask<RespValue> HStrLen(CommandContext ctx)
+    {
+        // Ref: https://redis.io/docs/latest/commands/hstrlen/
+        var key = ctx.GetArgString(0);
+        var field = ctx.GetArgString(1);
+        var entry = ctx.Database.GetTyped<RedisHash>(key);
+        if (entry == null || !entry.Fields.TryGetValue(field, out var value))
+            return ValueTask.FromResult(RespValue.Zero);
+        return ValueTask.FromResult<RespValue>(new RespValue.Integer(value.Length));
     }
 }

@@ -32,6 +32,9 @@ internal sealed class ServerCommands : ICommandHandler
             "QUIT" => Quit(context),
             "SWAPDB" => SwapDb(context),
             "RESET" => Reset(context),
+            "SLOWLOG" => SlowLog(context),
+            "MEMORY" => Memory(context),
+            "DEBUG" => Debug(context),
             _ => ValueTask.FromResult<RespValue>(new RespValue.Error("ERR", $"unknown command '{context.CommandName}'"))
         };
     }
@@ -319,6 +322,56 @@ internal sealed class ServerCommands : ICommandHandler
         ctx.Client.ChannelSubscriptions.Clear();
         ctx.Client.PatternSubscriptions.Clear();
         return ValueTask.FromResult<RespValue>(new RespValue.SimpleString("RESET"));
+    }
+
+    // Ref: https://redis.io/docs/latest/commands/slowlog/
+    private static ValueTask<RespValue> SlowLog(CommandContext ctx)
+    {
+        if (ctx.Arguments.Length == 0)
+            return ValueTask.FromResult<RespValue>(new RespValue.Error("ERR", "wrong number of arguments for 'slowlog' command"));
+        var sub = ctx.GetArgString(0).ToUpperInvariant();
+        return sub switch
+        {
+            "GET" => ValueTask.FromResult(RespValue.EmptyArray),
+            "LEN" => ValueTask.FromResult(RespValue.Zero),
+            "RESET" => ValueTask.FromResult(RespValue.Ok),
+            _ => ValueTask.FromResult(RespValue.Ok)
+        };
+    }
+
+    // Ref: https://redis.io/docs/latest/commands/memory-usage/
+    private static ValueTask<RespValue> Memory(CommandContext ctx)
+    {
+        if (ctx.Arguments.Length == 0)
+            return ValueTask.FromResult<RespValue>(new RespValue.Error("ERR", "wrong number of arguments for 'memory' command"));
+        var sub = ctx.GetArgString(0).ToUpperInvariant();
+        if (sub == "USAGE" && ctx.Arguments.Length > 1)
+        {
+            var key = ctx.GetArgString(1);
+            var entry = ctx.Database.GetEntry(key);
+            if (entry == null) return ValueTask.FromResult(RespValue.NullBulkString);
+            // Return approximate memory: base 64 bytes + value-dependent
+            long size = entry switch
+            {
+                RedisString rs => 64 + rs.Value.Length,
+                RedisHash rh => 64 + rh.Fields.Sum(f => f.Key.Length + f.Value.Length + 32),
+                RedisList rl => 64 + rl.Items.Count * 40,
+                RedisSet rs => 64 + rs.Members.Count * 32,
+                RedisSortedSet rz => 64 + rz.MemberScores.Count * 48,
+                _ => 64
+            };
+            return ValueTask.FromResult<RespValue>(new RespValue.Integer(size));
+        }
+        if (sub == "DOCTOR" || sub == "MALLOC-STATS" || sub == "STATS")
+            return ValueTask.FromResult<RespValue>(RespValue.FromBulkString(""));
+        return ValueTask.FromResult<RespValue>(new RespValue.Error("ERR", $"unknown subcommand '{sub}'"));
+    }
+
+    private static ValueTask<RespValue> Debug(CommandContext ctx)
+    {
+        if (ctx.Arguments.Length > 0 && ctx.GetArgString(0).Equals("SLEEP", StringComparison.OrdinalIgnoreCase))
+            return ValueTask.FromResult(RespValue.Ok);
+        return ValueTask.FromResult(RespValue.Ok);
     }
 
     internal static bool MatchesGlob(string input, string pattern)

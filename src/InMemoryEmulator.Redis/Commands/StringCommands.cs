@@ -31,7 +31,8 @@ internal sealed class StringCommands : ICommandHandler
             "STRLEN" => StrLen(context),
             "GETRANGE" => GetRange(context),
             "SETRANGE" => SetRange(context),
-            "SUBSTR" => GetRange(context), // SUBSTR is alias for GETRANGE
+            "SUBSTR" => GetRange(context),
+            "LCS" => Lcs(context),
             _ => ValueTask.FromResult<RespValue>(new RespValue.Error("ERR", $"unknown command '{context.CommandName}'"))
         };
     }
@@ -396,6 +397,71 @@ internal sealed class StringCommands : ICommandHandler
         if (entry?.Expiry != null) newEntry.Expiry = entry.Expiry;
         ctx.Database.SetEntry(key, newEntry);
         return ValueTask.FromResult<RespValue>(new RespValue.Integer(newLen));
+    }
+
+    // Ref: https://redis.io/docs/latest/commands/lcs/
+    //   "Returns the longest common subsequence between two string values."
+    private static ValueTask<RespValue> Lcs(CommandContext ctx)
+    {
+        var key1 = ctx.GetArgString(0);
+        var key2 = ctx.GetArgString(1);
+        var s1 = ctx.Database.GetTyped<RedisString>(key1);
+        var s2 = ctx.Database.GetTyped<RedisString>(key2);
+        var str1 = s1 != null ? Encoding.UTF8.GetString(s1.Value) : "";
+        var str2 = s2 != null ? Encoding.UTF8.GetString(s2.Value) : "";
+
+        bool wantLen = false;
+        bool wantIdx = false;
+        long minMatchLen = 0;
+        for (int i = 2; i < ctx.Arguments.Length; i++)
+        {
+            var opt = ctx.GetArgString(i).ToUpperInvariant();
+            if (opt == "LEN") wantLen = true;
+            else if (opt == "IDX") wantIdx = true;
+            else if (opt == "MINMATCHLEN") { i++; minMatchLen = ctx.GetArgLong(i); }
+            else if (opt == "WITHMATCHLEN") { /* used with IDX */ }
+        }
+
+        var lcs = ComputeLcs(str1, str2);
+
+        if (wantLen)
+            return ValueTask.FromResult<RespValue>(new RespValue.Integer(lcs.Length));
+
+        if (wantIdx)
+        {
+            // Simplified: return matches array and length
+            return ValueTask.FromResult<RespValue>(new RespValue.Array(new RespValue[]
+            {
+                RespValue.FromBulkString("matches"),
+                RespValue.EmptyArray,
+                RespValue.FromBulkString("len"),
+                new RespValue.Integer(lcs.Length)
+            }));
+        }
+
+        return ValueTask.FromResult<RespValue>(RespValue.FromBulkString(lcs));
+    }
+
+    private static string ComputeLcs(string a, string b)
+    {
+        var m = a.Length;
+        var n = b.Length;
+        var dp = new int[m + 1, n + 1];
+
+        for (int i = 1; i <= m; i++)
+            for (int j = 1; j <= n; j++)
+                dp[i, j] = a[i - 1] == b[j - 1] ? dp[i - 1, j - 1] + 1 : Math.Max(dp[i - 1, j], dp[i, j - 1]);
+
+        var result = new char[dp[m, n]];
+        int idx = result.Length - 1;
+        int x = m, y = n;
+        while (x > 0 && y > 0)
+        {
+            if (a[x - 1] == b[y - 1]) { result[idx--] = a[x - 1]; x--; y--; }
+            else if (dp[x - 1, y] > dp[x, y - 1]) x--;
+            else y--;
+        }
+        return new string(result);
     }
 
     private static string FormatRedisFloat(double value)

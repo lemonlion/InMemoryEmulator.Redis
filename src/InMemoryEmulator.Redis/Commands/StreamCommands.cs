@@ -22,6 +22,8 @@ internal sealed class StreamCommands : ICommandHandler
             "XREADGROUP" => XReadGroup(context),
             "XACK" => XAck(context),
             "XPENDING" => XPending(context),
+            "XCLAIM" => XClaim(context),
+            "XAUTOCLAIM" => XAutoClaim(context),
             _ => ValueTask.FromResult<RespValue>(new RespValue.Error("ERR", $"unknown command '{context.CommandName}'"))
         };
     }
@@ -204,13 +206,23 @@ internal sealed class StreamCommands : ICommandHandler
         int i = 1;
         var strategy = ctx.GetArgString(i).ToUpperInvariant();
         i++;
-        if (ctx.GetArgString(i) == "~") i++; // approximate
-        var threshold = (int)long.Parse(ctx.GetArgString(i));
+        if (i < ctx.Arguments.Length && ctx.GetArgString(i) == "~") i++; // approximate
+        var thresholdStr = ctx.GetArgString(i);
 
         int removed = 0;
         if (strategy == "MAXLEN")
         {
-            while (stream.Entries.Count > threshold) { stream.Entries.RemoveAt(0); removed++; }
+            var maxLen = (int)long.Parse(thresholdStr);
+            while (stream.Entries.Count > maxLen) { stream.Entries.RemoveAt(0); removed++; }
+        }
+        else if (strategy == "MINID")
+        {
+            // Remove entries with ID less than the threshold
+            while (stream.Entries.Count > 0 && RedisStream.CompareIds(stream.Entries[0].Id, thresholdStr) < 0)
+            {
+                stream.Entries.RemoveAt(0);
+                removed++;
+            }
         }
 
         if (removed > 0) ctx.Database.IncrementVersion(key);
@@ -456,6 +468,121 @@ internal sealed class StreamCommands : ICommandHandler
 
         // Extended form with range
         return ValueTask.FromResult(RespValue.EmptyArray);
+    }
+
+    // Ref: https://redis.io/docs/latest/commands/xclaim/
+    private static ValueTask<RespValue> XClaim(CommandContext ctx)
+    {
+        var key = ctx.GetArgString(0);
+        var groupName = ctx.GetArgString(1);
+        var consumerName = ctx.GetArgString(2);
+        var minIdleTime = ctx.GetArgLong(3); // ignored in emulator
+
+        var stream = ctx.Database.GetTyped<RedisStream>(key);
+        if (stream == null || !stream.ConsumerGroups.TryGetValue(groupName, out var group))
+            return ValueTask.FromResult(RespValue.EmptyArray);
+
+        if (!group.Consumers.ContainsKey(consumerName))
+            group.Consumers[consumerName] = new ConsumerInfo { Name = consumerName };
+
+        var claimed = new List<RespValue>();
+        for (int i = 4; i < ctx.Arguments.Length; i++)
+        {
+            var idStr = ctx.GetArgString(i);
+            if (idStr.StartsWith('-') || idStr.Equals("IDLE", StringComparison.OrdinalIgnoreCase) ||
+                idStr.Equals("TIME", StringComparison.OrdinalIgnoreCase) ||
+                idStr.Equals("RETRYCOUNT", StringComparison.OrdinalIgnoreCase) ||
+                idStr.Equals("FORCE", StringComparison.OrdinalIgnoreCase) ||
+                idStr.Equals("JUSTID", StringComparison.OrdinalIgnoreCase))
+                break;
+
+            if (group.PendingEntries.TryGetValue(idStr, out var pe))
+            {
+                if (group.Consumers.TryGetValue(pe.ConsumerName, out var oldConsumer))
+                    oldConsumer.PendingCount--;
+                pe.ConsumerName = consumerName;
+                pe.DeliveryCount++;
+                pe.DeliveredAt = DateTimeOffset.UtcNow;
+                group.Consumers[consumerName].PendingCount++;
+
+                var entry = stream.Entries.FirstOrDefault(e => e.Id == idStr);
+                if (entry != null)
+                    claimed.Add(FormatStreamEntry(entry));
+            }
+        }
+        return ValueTask.FromResult<RespValue>(new RespValue.Array(claimed.ToArray()));
+    }
+
+    // Ref: https://redis.io/docs/latest/commands/xautoclaim/
+    private static ValueTask<RespValue> XAutoClaim(CommandContext ctx)
+    {
+        var key = ctx.GetArgString(0);
+        var groupName = ctx.GetArgString(1);
+        var consumerName = ctx.GetArgString(2);
+        var minIdleMs = ctx.GetArgLong(3);
+        var startId = ctx.GetArgString(4);
+        int count = int.MaxValue;
+        bool justId = false;
+        for (int i = 5; i < ctx.Arguments.Length; i++)
+        {
+            var opt = ctx.GetArgString(i).ToUpperInvariant();
+            if (opt == "COUNT") { i++; count = (int)ctx.GetArgLong(i); }
+            else if (opt == "JUSTID") justId = true;
+        }
+
+        var stream = ctx.Database.GetTyped<RedisStream>(key);
+        if (stream == null || !stream.ConsumerGroups.TryGetValue(groupName, out var group))
+            return ValueTask.FromResult<RespValue>(new RespValue.Array(new RespValue[]
+            {
+                RespValue.FromBulkString("0-0"),
+                RespValue.EmptyArray,
+                RespValue.EmptyArray
+            }));
+
+        if (!group.Consumers.ContainsKey(consumerName))
+            group.Consumers[consumerName] = new ConsumerInfo { Name = consumerName };
+
+        var minIdle = TimeSpan.FromMilliseconds(minIdleMs);
+        var now = DateTimeOffset.UtcNow;
+        var claimed = new List<RespValue>();
+        var deletedIds = new List<RespValue>();
+        string nextStartId = "0-0";
+
+        var candidates = group.PendingEntries.Values
+            .Where(pe => RedisStream.CompareIds(pe.EntryId, startId) >= 0)
+            .Where(pe => (now - pe.DeliveredAt) >= minIdle)
+            .OrderBy(pe => pe.EntryId)
+            .Take(count)
+            .ToList();
+
+        foreach (var pe in candidates)
+        {
+            if (group.Consumers.TryGetValue(pe.ConsumerName, out var oldConsumer))
+                oldConsumer.PendingCount--;
+            pe.ConsumerName = consumerName;
+            pe.DeliveryCount++;
+            pe.DeliveredAt = now;
+            group.Consumers[consumerName].PendingCount++;
+
+            var entry = stream.Entries.FirstOrDefault(e => e.Id == pe.EntryId);
+            if (entry != null)
+            {
+                claimed.Add(justId ? RespValue.FromBulkString(pe.EntryId) : FormatStreamEntry(entry));
+            }
+            else
+            {
+                deletedIds.Add(RespValue.FromBulkString(pe.EntryId));
+                group.PendingEntries.Remove(pe.EntryId);
+            }
+            nextStartId = pe.EntryId;
+        }
+
+        return ValueTask.FromResult<RespValue>(new RespValue.Array(new RespValue[]
+        {
+            RespValue.FromBulkString(nextStartId),
+            new RespValue.Array(claimed.ToArray()),
+            new RespValue.Array(deletedIds.ToArray())
+        }));
     }
 
     private static RespValue FormatStreamEntry(StreamEntry entry)

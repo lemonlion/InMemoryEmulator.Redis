@@ -359,10 +359,62 @@ internal sealed class KeyCommands : ICommandHandler
         return ValueTask.FromResult<RespValue>(new RespValue.Error("ERR", "RESTORE is not fully supported in the emulator"));
     }
 
+    // Ref: https://redis.io/docs/latest/commands/sort/
     private static ValueTask<RespValue> Sort(CommandContext ctx)
     {
-        // Simplified SORT: only supports basic ASC/DESC ALPHA on list/set/zset
-        return ValueTask.FromResult(RespValue.EmptyArray);
+        var key = ctx.GetArgString(0);
+        var entry = ctx.Database.GetEntry(key);
+        if (entry == null) return ValueTask.FromResult(RespValue.EmptyArray);
+
+        IEnumerable<string> elements;
+        if (entry is RedisList rl)
+            elements = rl.Items.Select(b => Encoding.UTF8.GetString(b));
+        else if (entry is RedisSet rs)
+            elements = rs.Members;
+        else if (entry is RedisSortedSet rz)
+            elements = rz.ScoreIndex.Select(e => e.Member);
+        else
+            return ValueTask.FromResult<RespValue>(new RespValue.Error("ERR", "One or more scores can't be converted into double"));
+
+        bool alpha = false, desc = false;
+        int offset = 0, count = int.MaxValue;
+        string? storeKey = null;
+
+        for (int i = 1; i < ctx.Arguments.Length; i++)
+        {
+            var opt = ctx.GetArgString(i).ToUpperInvariant();
+            switch (opt)
+            {
+                case "ALPHA": alpha = true; break;
+                case "DESC": desc = true; break;
+                case "ASC": desc = false; break;
+                case "LIMIT":
+                    i++; offset = (int)ctx.GetArgLong(i);
+                    i++; count = (int)ctx.GetArgLong(i);
+                    break;
+                case "STORE": i++; storeKey = ctx.GetArgString(i); break;
+                case "BY": i++; break; // skip BY pattern (simplified)
+                case "GET": i++; break; // skip GET pattern (simplified)
+            }
+        }
+
+        var sorted = alpha
+            ? (desc ? elements.OrderByDescending(e => e, StringComparer.Ordinal) : elements.OrderBy(e => e, StringComparer.Ordinal))
+            : (desc ? elements.OrderByDescending(e => double.TryParse(e, out var d) ? d : 0) : elements.OrderBy(e => double.TryParse(e, out var d) ? d : 0));
+
+        var result = sorted.Skip(offset).Take(count).ToList();
+
+        if (storeKey != null)
+        {
+            var list = new RedisList();
+            foreach (var item in result) list.Items.AddLast(Encoding.UTF8.GetBytes(item));
+            if (list.Items.Count > 0) ctx.Database.SetEntry(storeKey, list);
+            else ctx.Database.RemoveEntry(storeKey);
+            return ValueTask.FromResult<RespValue>(new RespValue.Integer(result.Count));
+        }
+
+        var respResult = result.Select(e => (RespValue)RespValue.FromBulkString(e)).ToArray();
+        return ValueTask.FromResult<RespValue>(new RespValue.Array(respResult));
     }
 
     private static ValueTask<RespValue> Wait(CommandContext ctx)

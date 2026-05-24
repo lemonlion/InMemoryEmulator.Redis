@@ -259,13 +259,95 @@ internal sealed class GeoCommands : ICommandHandler
         return ValueTask.FromResult<RespValue>(new RespValue.Array(results.ToArray()));
     }
 
+    // Ref: https://redis.io/docs/latest/commands/geosearchstore/
     private static ValueTask<RespValue> GeoSearchStore(CommandContext ctx)
     {
-        // Simplified: store results into destination sorted set
         var destKey = ctx.GetArgString(0);
         var srcKey = ctx.GetArgString(1);
-        // Re-route to GeoSearch logic but store results
-        // For now, return 0 as this is complex
-        return ValueTask.FromResult(RespValue.Zero);
+        var zset = ctx.Database.GetTyped<RedisSortedSet>(srcKey);
+        if (zset == null)
+        {
+            ctx.Database.RemoveEntry(destKey);
+            return ValueTask.FromResult(RespValue.Zero);
+        }
+
+        double centerLon = 0, centerLat = 0;
+        double radius = 0;
+        string unit = "m";
+        bool storeDist = false;
+        int count = int.MaxValue;
+        bool asc = true;
+
+        int i = 2;
+        while (i < ctx.Arguments.Length)
+        {
+            var opt = ctx.GetArgString(i).ToUpperInvariant();
+            switch (opt)
+            {
+                case "FROMMEMBER":
+                    i++;
+                    var member = ctx.GetArgString(i);
+                    var memberScore = zset.GetScore(member);
+                    if (memberScore.HasValue)
+                        (centerLon, centerLat) = GeoIndex.DecodeGeoHash(memberScore.Value);
+                    break;
+                case "FROMLONLAT":
+                    i++;
+                    centerLon = double.Parse(ctx.GetArgString(i), CultureInfo.InvariantCulture);
+                    i++;
+                    centerLat = double.Parse(ctx.GetArgString(i), CultureInfo.InvariantCulture);
+                    break;
+                case "BYRADIUS":
+                    i++;
+                    radius = double.Parse(ctx.GetArgString(i), CultureInfo.InvariantCulture);
+                    i++;
+                    unit = ctx.GetArgString(i);
+                    break;
+                case "BYBOX":
+                    i++;
+                    var width = double.Parse(ctx.GetArgString(i), CultureInfo.InvariantCulture);
+                    i++;
+                    var height = double.Parse(ctx.GetArgString(i), CultureInfo.InvariantCulture);
+                    i++;
+                    unit = ctx.GetArgString(i);
+                    radius = GeoIndex.ConvertToMeters(Math.Max(width, height) / 2, unit);
+                    unit = "m";
+                    break;
+                case "ASC": asc = true; break;
+                case "DESC": asc = false; break;
+                case "COUNT": i++; count = (int)long.Parse(ctx.GetArgString(i)); break;
+                case "STOREDIST": storeDist = true; break;
+                case "ANY": break;
+            }
+            i++;
+        }
+
+        var radiusMeters = GeoIndex.ConvertToMeters(radius, unit);
+        var matches = new List<(string Member, double Dist, double Score)>();
+
+        foreach (var (score, memberName) in zset.ScoreIndex)
+        {
+            var (lon, lat) = GeoIndex.DecodeGeoHash(score);
+            var dist = GeoIndex.HaversineDistance(centerLon, centerLat, lon, lat);
+            if (dist <= radiusMeters)
+                matches.Add((memberName, dist, score));
+        }
+
+        if (asc) matches.Sort((a, b) => a.Dist.CompareTo(b.Dist));
+        else matches.Sort((a, b) => b.Dist.CompareTo(a.Dist));
+        if (count < matches.Count) matches = matches.Take(count).ToList();
+
+        if (matches.Count == 0)
+        {
+            ctx.Database.RemoveEntry(destKey);
+            return ValueTask.FromResult(RespValue.Zero);
+        }
+
+        var dest = new RedisSortedSet();
+        foreach (var (memberName, dist, score) in matches)
+            dest.Add(memberName, storeDist ? GeoIndex.ConvertFromMeters(dist, unit) : score);
+        ctx.Database.SetEntry(destKey, dest);
+
+        return ValueTask.FromResult<RespValue>(new RespValue.Integer(matches.Count));
     }
 }

@@ -26,6 +26,9 @@ internal sealed class ListCommands : ICommandHandler
             "RPOPLPUSH" => RPopLPush(context),
             "LMOVE" => LMove(context),
             "LPOS" => LPos(context),
+            "BLPOP" => BLPop(context),
+            "BRPOP" => BRPop(context),
+            "BLMOVE" => BLMove(context),
             _ => ValueTask.FromResult<RespValue>(new RespValue.Error("ERR", $"unknown command '{context.CommandName}'"))
         };
     }
@@ -393,5 +396,80 @@ internal sealed class ListCommands : ICommandHandler
         if (positions.Count == 0)
             return ValueTask.FromResult(RespValue.NullBulkString);
         return ValueTask.FromResult<RespValue>(new RespValue.Integer(positions[0]));
+    }
+
+    // Ref: https://redis.io/docs/latest/commands/blpop/
+    //   "BLPOP is a blocking list pop primitive."
+    // In the emulator: check immediately, return nil on timeout (no actual blocking)
+    private static ValueTask<RespValue> BLPop(CommandContext ctx)
+    {
+        // Last argument is timeout, preceding are keys
+        for (int i = 0; i < ctx.Arguments.Length - 1; i++)
+        {
+            var key = ctx.GetArgString(i);
+            var entry = ctx.Database.GetTyped<RedisList>(key);
+            if (entry != null && entry.Items.Count > 0)
+            {
+                var val = entry.Items.First!.Value;
+                entry.Items.RemoveFirst();
+                if (entry.Items.Count == 0) ctx.Database.RemoveEntry(key);
+                else ctx.Database.IncrementVersion(key);
+                return ValueTask.FromResult<RespValue>(new RespValue.Array(new RespValue[]
+                {
+                    RespValue.FromBulkString(key),
+                    new RespValue.BulkString(val)
+                }));
+            }
+        }
+        return ValueTask.FromResult(RespValue.NullArray);
+    }
+
+    private static ValueTask<RespValue> BRPop(CommandContext ctx)
+    {
+        for (int i = 0; i < ctx.Arguments.Length - 1; i++)
+        {
+            var key = ctx.GetArgString(i);
+            var entry = ctx.Database.GetTyped<RedisList>(key);
+            if (entry != null && entry.Items.Count > 0)
+            {
+                var val = entry.Items.Last!.Value;
+                entry.Items.RemoveLast();
+                if (entry.Items.Count == 0) ctx.Database.RemoveEntry(key);
+                else ctx.Database.IncrementVersion(key);
+                return ValueTask.FromResult<RespValue>(new RespValue.Array(new RespValue[]
+                {
+                    RespValue.FromBulkString(key),
+                    new RespValue.BulkString(val)
+                }));
+            }
+        }
+        return ValueTask.FromResult(RespValue.NullArray);
+    }
+
+    private static ValueTask<RespValue> BLMove(CommandContext ctx)
+    {
+        var srcKey = ctx.GetArgString(0);
+        var dstKey = ctx.GetArgString(1);
+        var srcDir = ctx.GetArgString(2).ToUpperInvariant();
+        var dstDir = ctx.GetArgString(3).ToUpperInvariant();
+        // timeout is arg 4, ignored in emulator
+
+        var src = ctx.Database.GetTyped<RedisList>(srcKey);
+        if (src == null || src.Items.Count == 0)
+            return ValueTask.FromResult(RespValue.NullBulkString);
+
+        byte[] val;
+        if (srcDir == "LEFT") { val = src.Items.First!.Value; src.Items.RemoveFirst(); }
+        else { val = src.Items.Last!.Value; src.Items.RemoveLast(); }
+
+        if (src.Items.Count == 0) ctx.Database.RemoveEntry(srcKey);
+        else ctx.Database.IncrementVersion(srcKey);
+
+        var dst = GetOrCreateList(ctx, dstKey);
+        if (dstDir == "LEFT") dst.Items.AddFirst(val);
+        else dst.Items.AddLast(val);
+        ctx.Database.IncrementVersion(dstKey);
+
+        return ValueTask.FromResult<RespValue>(new RespValue.BulkString(val));
     }
 }

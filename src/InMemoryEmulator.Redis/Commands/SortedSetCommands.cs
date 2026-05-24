@@ -34,6 +34,7 @@ internal sealed class SortedSetCommands : ICommandHandler
             "ZINTERSTORE" => ZInterStore(context),
             "ZDIFFSTORE" => ZDiffStore(context),
             "ZSCAN" => ZScan(context),
+            "ZRANGESTORE" => ZRangeStore(context),
             _ => ValueTask.FromResult<RespValue>(new RespValue.Error("ERR", $"unknown command '{context.CommandName}'"))
         };
     }
@@ -497,6 +498,73 @@ internal sealed class SortedSetCommands : ICommandHandler
             results.Add(RespValue.FromBulkString(FormatScore(members[i].Score)));
         }
         return ValueTask.FromResult<RespValue>(new RespValue.Array(new RespValue[] { RespValue.FromBulkString(next.ToString()), new RespValue.Array(results.ToArray()) }));
+    }
+
+    // Ref: https://redis.io/docs/latest/commands/zrangestore/
+    private static ValueTask<RespValue> ZRangeStore(CommandContext ctx)
+    {
+        var destKey = ctx.GetArgString(0);
+        var srcKey = ctx.GetArgString(1);
+        var min = ctx.GetArgString(2);
+        var max = ctx.GetArgString(3);
+
+        var zset = GetZSet(ctx, srcKey);
+        if (zset == null)
+        {
+            ctx.Database.RemoveEntry(destKey);
+            return ValueTask.FromResult(RespValue.Zero);
+        }
+
+        bool byScore = false, byLex = false, rev = false;
+        int offset = 0, count = int.MaxValue;
+        for (int i = 4; i < ctx.Arguments.Length; i++)
+        {
+            var opt = ctx.GetArgString(i).ToUpperInvariant();
+            if (opt == "BYSCORE") byScore = true;
+            else if (opt == "BYLEX") byLex = true;
+            else if (opt == "REV") rev = true;
+            else if (opt == "LIMIT") { i++; offset = (int)long.Parse(ctx.GetArgString(i)); i++; count = (int)long.Parse(ctx.GetArgString(i)); }
+        }
+
+        IEnumerable<(double Score, string Member)> items;
+        if (byScore)
+        {
+            var (minV, minExcl) = ParseScoreBound(min, double.NegativeInfinity);
+            var (maxV, maxExcl) = ParseScoreBound(max, double.PositiveInfinity);
+            items = (rev ? zset.ScoreIndex.Reverse() : zset.ScoreIndex)
+                .Where(e => (minExcl ? e.Score > minV : e.Score >= minV) && (maxExcl ? e.Score < maxV : e.Score <= maxV));
+        }
+        else if (byLex)
+        {
+            var (minL, minExcl, minInf) = ParseLexBound(min);
+            var (maxL, maxExcl, maxInf) = ParseLexBound(max);
+            items = (rev ? zset.ScoreIndex.Reverse() : zset.ScoreIndex)
+                .Where(e => (minInf || (minExcl ? string.CompareOrdinal(e.Member, minL) > 0 : string.CompareOrdinal(e.Member, minL) >= 0)) &&
+                           (maxInf || (maxExcl ? string.CompareOrdinal(e.Member, maxL) < 0 : string.CompareOrdinal(e.Member, maxL) <= 0)));
+        }
+        else
+        {
+            var start = int.Parse(min);
+            var stop = int.Parse(max);
+            var list = (rev ? zset.ScoreIndex.Reverse() : zset.ScoreIndex).ToList();
+            var len = list.Count;
+            if (start < 0) start = Math.Max(len + start, 0);
+            if (stop < 0) stop = len + stop;
+            stop = Math.Min(stop, len - 1);
+            items = start > stop ? Enumerable.Empty<(double, string)>() : list.Skip(start).Take(stop - start + 1);
+        }
+
+        var result = items.Skip(offset).Take(count).ToList();
+        if (result.Count == 0)
+        {
+            ctx.Database.RemoveEntry(destKey);
+            return ValueTask.FromResult(RespValue.Zero);
+        }
+
+        var dest = new RedisSortedSet();
+        foreach (var (score, member) in result) dest.Add(member, score);
+        ctx.Database.SetEntry(destKey, dest);
+        return ValueTask.FromResult<RespValue>(new RespValue.Integer(result.Count));
     }
 
     private static double ParseScore(string s)

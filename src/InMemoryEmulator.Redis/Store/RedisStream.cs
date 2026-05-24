@@ -85,7 +85,7 @@ internal sealed class ConsumerInfo
 internal sealed class PendingEntry
 {
     public required string EntryId { get; init; }
-    public required string ConsumerName { get; init; }
+    public string ConsumerName { get; set; } = "";
     public DateTimeOffset DeliveredAt { get; set; } = DateTimeOffset.UtcNow;
     public int DeliveryCount { get; set; } = 1;
 }

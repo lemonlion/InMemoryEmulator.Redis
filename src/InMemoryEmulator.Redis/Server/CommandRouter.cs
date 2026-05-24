@@ -48,6 +48,9 @@ internal sealed class CommandRouter
         Register("RESET", server);
         Register("AUTH", server);
         Register("QUIT", server);
+        Register("SLOWLOG", server);
+        Register("MEMORY", server);
+        Register("DEBUG", server);
 
         // String commands
         Register("GET", strings);
@@ -71,6 +74,7 @@ internal sealed class CommandRouter
         Register("GETRANGE", strings);
         Register("SETRANGE", strings);
         Register("SUBSTR", strings);
+        Register("LCS", strings);
 
         // Key commands
         Register("DEL", keys);
@@ -115,6 +119,7 @@ internal sealed class CommandRouter
         Register("HSETNX", hashes);
         Register("HRANDFIELD", hashes);
         Register("HSCAN", hashes);
+        Register("HSTRLEN", hashes);
 
         // List commands
         Register("LPUSH", lists);
@@ -133,6 +138,9 @@ internal sealed class CommandRouter
         Register("RPOPLPUSH", lists);
         Register("LMOVE", lists);
         Register("LPOS", lists);
+        Register("BLPOP", lists);
+        Register("BRPOP", lists);
+        Register("BLMOVE", lists);
 
         // Set commands
         Register("SADD", sets);
@@ -177,6 +185,7 @@ internal sealed class CommandRouter
         Register("ZINTERSTORE", sortedSets);
         Register("ZDIFFSTORE", sortedSets);
         Register("ZSCAN", sortedSets);
+        Register("ZRANGESTORE", sortedSets);
 
         // Pub/Sub commands
         Register("SUBSCRIBE", pubSubCmds);
@@ -219,6 +228,8 @@ internal sealed class CommandRouter
         Register("XREADGROUP", streams);
         Register("XACK", streams);
         Register("XPENDING", streams);
+        Register("XCLAIM", streams);
+        Register("XAUTOCLAIM", streams);
 
         // Scripting commands
         Register("EVAL", scripting);
