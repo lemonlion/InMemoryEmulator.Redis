@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Threading.Channels;
 
 namespace InMemoryEmulator.Redis.Store;
 
@@ -7,6 +8,7 @@ internal sealed class RedisDatabase : IDisposable
     private readonly ConcurrentDictionary<string, RedisEntry> _entries = new();
     private readonly ConcurrentDictionary<string, long> _keyVersions = new();
     private readonly ExpiryManager _expiryManager;
+    private readonly ConcurrentDictionary<string, ConcurrentBag<TaskCompletionSource<string>>> _listPushWaiters = new();
     private long _versionCounter;
 
     public RedisDatabase()
@@ -15,6 +17,32 @@ internal sealed class RedisDatabase : IDisposable
     }
 
     public void Dispose() => _expiryManager.Dispose();
+
+    internal void NotifyListPush(string key)
+    {
+        if (_listPushWaiters.TryGetValue(key, out var waiters))
+        {
+            while (waiters.TryTake(out var tcs))
+            {
+                tcs.TrySetResult(key);
+                return;
+            }
+        }
+    }
+
+    internal Task<string> WaitForListPushAsync(string[] keys, CancellationToken ct)
+    {
+        var tcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        ct.Register(() => tcs.TrySetCanceled());
+
+        foreach (var key in keys)
+        {
+            var bag = _listPushWaiters.GetOrAdd(key, _ => new ConcurrentBag<TaskCompletionSource<string>>());
+            bag.Add(tcs);
+        }
+
+        return tcs.Task;
+    }
 
     public RedisEntry? GetEntry(string key)
     {

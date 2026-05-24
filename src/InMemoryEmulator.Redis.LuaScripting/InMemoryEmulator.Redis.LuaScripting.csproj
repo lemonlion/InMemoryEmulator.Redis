@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>InMemoryEmulator.Redis.LuaScripting</RootNamespace>
+    <Description>Lua scripting support for InMemoryEmulator.Redis via MoonSharp interpreter</Description>
+    <PackageTags>redis;lua;scripting;testing;emulator</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="MoonSharp" Version="2.0.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\InMemoryEmulator.Redis\InMemoryEmulator.Redis.csproj" />
+  </ItemGroup>
+
+</Project>

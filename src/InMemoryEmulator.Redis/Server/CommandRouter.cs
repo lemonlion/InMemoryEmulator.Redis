@@ -8,6 +8,7 @@ internal sealed class CommandRouter
 {
     private readonly Dictionary<string, ICommandHandler> _handlers = new(StringComparer.OrdinalIgnoreCase);
     private readonly CommandLog _commandLog;
+    private ScriptingCommands? _scripting;
 
     public CommandRouter(InMemoryRedisStore store, PubSubBroker pubSub, CommandLog commandLog)
     {
@@ -29,7 +30,8 @@ internal sealed class CommandRouter
         var hll = new HyperLogLogCommands();
         var geo = new GeoCommands();
         var streams = new StreamCommands();
-        var scripting = new ScriptingCommands();
+        var scripting = new ScriptingCommands(this);
+        _scripting = scripting;
 
         Register("PING", server);
         Register("ECHO", server);
@@ -194,6 +196,8 @@ internal sealed class CommandRouter
         Register("PUNSUBSCRIBE", pubSubCmds);
         Register("PUBLISH", pubSubCmds);
         Register("PUBSUB", pubSubCmds);
+        Register("SSUBSCRIBE", pubSubCmds);
+        Register("SUNSUBSCRIBE", pubSubCmds);
 
         // Transaction commands
         Register("MULTI", transactions);
@@ -269,4 +273,6 @@ internal sealed class CommandRouter
     }
 
     internal void Register(string name, ICommandHandler handler) => _handlers[name] = handler;
+
+    public void SetLuaEngine(ILuaScriptEngine engine) => _scripting?.SetLuaEngine(engine);
 }

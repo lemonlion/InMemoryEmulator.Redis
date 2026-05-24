@@ -36,6 +36,8 @@ public sealed class FakeRedisServer : IAsyncDisposable
 
     internal CommandRouter Router => _router;
 
+    internal void SetLuaEngine(ILuaScriptEngine engine) => _router.SetLuaEngine(engine);
+
     public Task StartAsync()
     {
         _listener.Start();

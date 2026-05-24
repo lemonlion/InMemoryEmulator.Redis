@@ -5,11 +5,15 @@ using InMemoryEmulator.Redis.Store;
 
 namespace InMemoryEmulator.Redis.Commands;
 
-// Ref: https://redis.io/docs/latest/commands/eval/
-//   "EVAL and EVALSHA are used to evaluate scripts using the Lua interpreter built into Redis."
 internal sealed class ScriptingCommands : ICommandHandler
 {
     private readonly ScriptCache _scriptCache = new();
+    private readonly CommandRouter _router;
+    private ILuaScriptEngine? _luaEngine;
+
+    public ScriptingCommands(CommandRouter router) => _router = router;
+
+    public void SetLuaEngine(ILuaScriptEngine engine) => _luaEngine = engine;
 
     public ValueTask<RespValue> ExecuteAsync(CommandContext context)
     {
@@ -31,11 +35,8 @@ internal sealed class ScriptingCommands : ICommandHandler
 
         var script = ctx.GetArgString(0);
         var numKeys = (int)ctx.GetArgLong(1);
-
-        // Cache the script
         _scriptCache.Load(script);
 
-        // Simple script execution for common patterns
         return ExecuteScript(ctx, script, numKeys);
     }
 
@@ -62,25 +63,21 @@ internal sealed class ScriptingCommands : ICommandHandler
                 var script = ctx.GetArgString(1);
                 var sha = _scriptCache.Load(script);
                 return ValueTask.FromResult<RespValue>(RespValue.FromBulkString(sha));
-
             case "EXISTS":
                 var results = new RespValue[ctx.Arguments.Length - 1];
                 for (int i = 1; i < ctx.Arguments.Length; i++)
                     results[i - 1] = _scriptCache.Exists(ctx.GetArgString(i)) ? RespValue.One : RespValue.Zero;
                 return ValueTask.FromResult<RespValue>(new RespValue.Array(results));
-
             case "FLUSH":
                 _scriptCache.Flush();
                 return ValueTask.FromResult(RespValue.Ok);
-
             default:
                 return ValueTask.FromResult<RespValue>(new RespValue.Error("ERR", $"unknown script subcommand '{sub}'"));
         }
     }
 
-    private static ValueTask<RespValue> ExecuteScript(CommandContext ctx, string script, int numKeys)
+    private async ValueTask<RespValue> ExecuteScript(CommandContext ctx, string script, int numKeys)
     {
-        // Parse KEYS and ARGV
         var keys = new string[numKeys];
         for (int i = 0; i < numKeys; i++)
             keys[i] = ctx.GetArgString(2 + i);
@@ -90,25 +87,38 @@ internal sealed class ScriptingCommands : ICommandHandler
         for (int i = 0; i < argv.Length; i++)
             argv[i] = ctx.GetArgString(argvStart + i);
 
-        // Simple pattern matching for common Lua scripts
-        // Pattern: return redis.call('CMD', KEYS[1], ...)
-        var result = TryExecuteSimpleScript(ctx, script, keys, argv);
-        if (result != null)
-            return ValueTask.FromResult(result);
+        // If full Lua engine is available, use it
+        if (_luaEngine != null)
+        {
+            return await _luaEngine.EvalAsync(script, keys, argv, async (cmd, args) =>
+            {
+                var respArgs = args.Select(a => (RespValue)RespValue.FromBulkString(a)).ToArray();
+                var cmdCtx = new CommandContext
+                {
+                    CommandName = cmd.ToUpperInvariant(),
+                    Arguments = respArgs,
+                    Client = ctx.Client,
+                    Database = ctx.Database,
+                    CancellationToken = ctx.CancellationToken
+                };
+                return await _router.ExecuteAsync(cmdCtx);
+            });
+        }
 
-        // For scripts we can't interpret, return OK or the first KEYS value
-        // This handles StackExchange.Redis internal scripts
+        // Fallback: simple pattern matching
+        var result = TryExecuteSimpleScript(script, keys, argv);
+        if (result != null) return result;
+
         if (script.Contains("redis.call") && script.Contains("return"))
-            return ValueTask.FromResult(RespValue.Ok);
+            return RespValue.Ok;
 
-        return ValueTask.FromResult(RespValue.NullBulkString);
+        return RespValue.NullBulkString;
     }
 
-    private static RespValue? TryExecuteSimpleScript(CommandContext ctx, string script, string[] keys, string[] argv)
+    private static RespValue? TryExecuteSimpleScript(string script, string[] keys, string[] argv)
     {
         var trimmed = script.Trim();
 
-        // Pattern: return 1 / return 0 / return nil
         if (trimmed == "return 1") return RespValue.One;
         if (trimmed == "return 0") return RespValue.Zero;
         if (trimmed == "return nil") return RespValue.NullBulkString;

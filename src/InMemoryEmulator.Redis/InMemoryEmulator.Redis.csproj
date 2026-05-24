@@ -13,6 +13,7 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="InMemoryEmulator.Redis.Tests.Unit" />
+    <InternalsVisibleTo Include="InMemoryEmulator.Redis.LuaScripting" />
   </ItemGroup>
 
 </Project>

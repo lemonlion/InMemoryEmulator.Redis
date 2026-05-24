@@ -53,6 +53,7 @@ internal sealed class ListCommands : ICommandHandler
         for (int i = 1; i < ctx.Arguments.Length; i++)
             list.Items.AddFirst(ctx.GetArgBytes(i) ?? Array.Empty<byte>());
         ctx.Database.IncrementVersion(key);
+        ctx.Database.NotifyListPush(key);
         return ValueTask.FromResult<RespValue>(new RespValue.Integer(list.Items.Count));
     }
 
@@ -63,6 +64,7 @@ internal sealed class ListCommands : ICommandHandler
         for (int i = 1; i < ctx.Arguments.Length; i++)
             list.Items.AddLast(ctx.GetArgBytes(i) ?? Array.Empty<byte>());
         ctx.Database.IncrementVersion(key);
+        ctx.Database.NotifyListPush(key);
         return ValueTask.FromResult<RespValue>(new RespValue.Integer(list.Items.Count));
     }
 
@@ -399,14 +401,16 @@ internal sealed class ListCommands : ICommandHandler
     }
 
     // Ref: https://redis.io/docs/latest/commands/blpop/
-    //   "BLPOP is a blocking list pop primitive."
-    // In the emulator: check immediately, return nil on timeout (no actual blocking)
-    private static ValueTask<RespValue> BLPop(CommandContext ctx)
+    //   "BLPOP is a blocking list pop primitive. It is the blocking version of LPOP."
+    private static async ValueTask<RespValue> BLPop(CommandContext ctx)
     {
-        // Last argument is timeout, preceding are keys
-        for (int i = 0; i < ctx.Arguments.Length - 1; i++)
+        var timeoutSeconds = ctx.GetArgDouble(ctx.Arguments.Length - 1);
+        var keys = new string[ctx.Arguments.Length - 1];
+        for (int i = 0; i < keys.Length; i++) keys[i] = ctx.GetArgString(i);
+
+        // Check immediately first
+        foreach (var key in keys)
         {
-            var key = ctx.GetArgString(i);
             var entry = ctx.Database.GetTyped<RedisList>(key);
             if (entry != null && entry.Items.Count > 0)
             {
@@ -414,21 +418,41 @@ internal sealed class ListCommands : ICommandHandler
                 entry.Items.RemoveFirst();
                 if (entry.Items.Count == 0) ctx.Database.RemoveEntry(key);
                 else ctx.Database.IncrementVersion(key);
-                return ValueTask.FromResult<RespValue>(new RespValue.Array(new RespValue[]
-                {
-                    RespValue.FromBulkString(key),
-                    new RespValue.BulkString(val)
-                }));
+                return new RespValue.Array(new RespValue[] { RespValue.FromBulkString(key), new RespValue.BulkString(val) });
             }
         }
-        return ValueTask.FromResult(RespValue.NullArray);
+
+        if (timeoutSeconds == 0) timeoutSeconds = 5; // cap at 5s in emulator to avoid hanging
+        var timeout = TimeSpan.FromSeconds(timeoutSeconds);
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ctx.CancellationToken);
+        cts.CancelAfter(timeout);
+
+        try
+        {
+            var readyKey = await ctx.Database.WaitForListPushAsync(keys, cts.Token);
+            var entry = ctx.Database.GetTyped<RedisList>(readyKey);
+            if (entry != null && entry.Items.Count > 0)
+            {
+                var val = entry.Items.First!.Value;
+                entry.Items.RemoveFirst();
+                if (entry.Items.Count == 0) ctx.Database.RemoveEntry(readyKey);
+                else ctx.Database.IncrementVersion(readyKey);
+                return new RespValue.Array(new RespValue[] { RespValue.FromBulkString(readyKey), new RespValue.BulkString(val) });
+            }
+        }
+        catch (OperationCanceledException) { }
+
+        return RespValue.NullArray;
     }
 
-    private static ValueTask<RespValue> BRPop(CommandContext ctx)
+    private static async ValueTask<RespValue> BRPop(CommandContext ctx)
     {
-        for (int i = 0; i < ctx.Arguments.Length - 1; i++)
+        var timeoutSeconds = ctx.GetArgDouble(ctx.Arguments.Length - 1);
+        var keys = new string[ctx.Arguments.Length - 1];
+        for (int i = 0; i < keys.Length; i++) keys[i] = ctx.GetArgString(i);
+
+        foreach (var key in keys)
         {
-            var key = ctx.GetArgString(i);
             var entry = ctx.Database.GetTyped<RedisList>(key);
             if (entry != null && entry.Items.Count > 0)
             {
@@ -436,14 +460,31 @@ internal sealed class ListCommands : ICommandHandler
                 entry.Items.RemoveLast();
                 if (entry.Items.Count == 0) ctx.Database.RemoveEntry(key);
                 else ctx.Database.IncrementVersion(key);
-                return ValueTask.FromResult<RespValue>(new RespValue.Array(new RespValue[]
-                {
-                    RespValue.FromBulkString(key),
-                    new RespValue.BulkString(val)
-                }));
+                return new RespValue.Array(new RespValue[] { RespValue.FromBulkString(key), new RespValue.BulkString(val) });
             }
         }
-        return ValueTask.FromResult(RespValue.NullArray);
+
+        if (timeoutSeconds == 0) timeoutSeconds = 5;
+        var timeout = TimeSpan.FromSeconds(timeoutSeconds);
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ctx.CancellationToken);
+        cts.CancelAfter(timeout);
+
+        try
+        {
+            var readyKey = await ctx.Database.WaitForListPushAsync(keys, cts.Token);
+            var entry = ctx.Database.GetTyped<RedisList>(readyKey);
+            if (entry != null && entry.Items.Count > 0)
+            {
+                var val = entry.Items.Last!.Value;
+                entry.Items.RemoveLast();
+                if (entry.Items.Count == 0) ctx.Database.RemoveEntry(readyKey);
+                else ctx.Database.IncrementVersion(readyKey);
+                return new RespValue.Array(new RespValue[] { RespValue.FromBulkString(readyKey), new RespValue.BulkString(val) });
+            }
+        }
+        catch (OperationCanceledException) { }
+
+        return RespValue.NullArray;
     }
 
     private static ValueTask<RespValue> BLMove(CommandContext ctx)

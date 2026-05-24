@@ -20,6 +20,8 @@ internal sealed class PubSubCommands : ICommandHandler
             "PUNSUBSCRIBE" => PUnsubscribe(context),
             "PUBLISH" => Publish(context),
             "PUBSUB" => PubSub(context),
+            "SSUBSCRIBE" => SSubscribe(context),
+            "SUNSUBSCRIBE" => SUnsubscribe(context),
             _ => ValueTask.FromResult<RespValue>(new RespValue.Error("ERR", $"unknown command '{context.CommandName}'"))
         };
     }
@@ -135,8 +137,63 @@ internal sealed class PubSubCommands : ICommandHandler
                 return ValueTask.FromResult<RespValue>(new RespValue.Array(results.ToArray()));
             case "NUMPAT":
                 return ValueTask.FromResult<RespValue>(new RespValue.Integer(_broker.GetPatternCount()));
+            case "SHARDCHANNELS":
+                var shardPattern = ctx.Arguments.Length > 1 ? ctx.GetArgString(1) : "*";
+                var shardChannels = _broker.GetActiveChannels(shardPattern);
+                return ValueTask.FromResult<RespValue>(new RespValue.Array(
+                    shardChannels.Select(c => (RespValue)RespValue.FromBulkString(c)).ToArray()));
+            case "SHARDNUMSUB":
+                var shardResults = new List<RespValue>();
+                for (int i = 1; i < ctx.Arguments.Length; i++)
+                {
+                    var ch2 = ctx.GetArgString(i);
+                    shardResults.Add(RespValue.FromBulkString(ch2));
+                    shardResults.Add(new RespValue.Integer(_broker.GetSubscriberCount(ch2)));
+                }
+                return ValueTask.FromResult<RespValue>(new RespValue.Array(shardResults.ToArray()));
             default:
                 return ValueTask.FromResult<RespValue>(new RespValue.Error("ERR", $"unknown subcommand '{sub}'"));
         }
+    }
+
+    // Ref: https://redis.io/docs/latest/commands/ssubscribe/
+    // In standalone mode, sharded pub/sub works the same as regular pub/sub
+    private ValueTask<RespValue> SSubscribe(CommandContext ctx)
+    {
+        for (int i = 0; i < ctx.Arguments.Length; i++)
+        {
+            var channel = ctx.GetArgString(i);
+            _broker.Subscribe(ctx.Client, channel);
+        }
+        var lastChannel = ctx.GetArgString(ctx.Arguments.Length - 1);
+        var total = ctx.Client.ChannelSubscriptions.Count + ctx.Client.PatternSubscriptions.Count;
+        return ValueTask.FromResult<RespValue>(new RespValue.Array(new RespValue[]
+        {
+            RespValue.FromBulkString("ssubscribe"),
+            RespValue.FromBulkString(lastChannel),
+            new RespValue.Integer(total)
+        }));
+    }
+
+    private ValueTask<RespValue> SUnsubscribe(CommandContext ctx)
+    {
+        if (ctx.Arguments.Length == 0)
+        {
+            foreach (var ch in ctx.Client.ChannelSubscriptions.ToArray())
+                _broker.Unsubscribe(ctx.Client, ch);
+        }
+        else
+        {
+            for (int i = 0; i < ctx.Arguments.Length; i++)
+                _broker.Unsubscribe(ctx.Client, ctx.GetArgString(i));
+        }
+        var total = ctx.Client.ChannelSubscriptions.Count + ctx.Client.PatternSubscriptions.Count;
+        var channel = ctx.Arguments.Length > 0 ? ctx.GetArgString(0) : "";
+        return ValueTask.FromResult<RespValue>(new RespValue.Array(new RespValue[]
+        {
+            RespValue.FromBulkString("sunsubscribe"),
+            RespValue.FromBulkString(channel),
+            new RespValue.Integer(total)
+        }));
     }
 }
