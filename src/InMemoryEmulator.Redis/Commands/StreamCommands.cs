@@ -98,6 +98,7 @@ internal sealed class StreamCommands : ICommandHandler
         }
 
         ctx.Database.IncrementVersion(key);
+        ctx.Database.NotifyKeyChanged(key);
         return ValueTask.FromResult<RespValue>(RespValue.FromBulkString(id));
     }
 
@@ -151,15 +152,16 @@ internal sealed class StreamCommands : ICommandHandler
         return ValueTask.FromResult<RespValue>(new RespValue.Array(results));
     }
 
-    private static ValueTask<RespValue> XRead(CommandContext ctx)
+    private static async ValueTask<RespValue> XRead(CommandContext ctx)
     {
         int count = int.MaxValue;
+        long blockMs = -1;
         int i = 0;
         while (i < ctx.Arguments.Length)
         {
             var opt = ctx.GetArgString(i).ToUpperInvariant();
             if (opt == "COUNT") { i++; count = (int)ctx.GetArgLong(i); i++; }
-            else if (opt == "BLOCK") { i += 2; } // ignore blocking for now
+            else if (opt == "BLOCK") { i++; blockMs = ctx.GetArgLong(i); i++; }
             else if (opt == "STREAMS") { i++; break; }
             else { i++; }
         }
@@ -170,8 +172,33 @@ internal sealed class StreamCommands : ICommandHandler
         for (int j = 0; j < numStreams; j++) keys[j] = ctx.GetArgString(i + j);
         for (int j = 0; j < numStreams; j++) ids[j] = ctx.GetArgString(i + numStreams + j);
 
+        var results = TryReadStreams(ctx, keys, ids, count);
+        if (results.Count > 0)
+            return new RespValue.Array(results.ToArray());
+
+        // Blocking
+        if (blockMs >= 0)
+        {
+            var timeout = blockMs == 0 ? TimeSpan.FromSeconds(5) : TimeSpan.FromMilliseconds(blockMs);
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ctx.CancellationToken);
+            cts.CancelAfter(timeout);
+            try
+            {
+                await ctx.Database.WaitForKeyChangeAsync(keys, cts.Token);
+                results = TryReadStreams(ctx, keys, ids, count);
+                if (results.Count > 0)
+                    return new RespValue.Array(results.ToArray());
+            }
+            catch (OperationCanceledException) { }
+        }
+
+        return RespValue.NullArray;
+    }
+
+    private static List<RespValue> TryReadStreams(CommandContext ctx, string[] keys, string[] ids, int count)
+    {
         var results = new List<RespValue>();
-        for (int j = 0; j < numStreams; j++)
+        for (int j = 0; j < keys.Length; j++)
         {
             var stream = ctx.Database.GetTyped<RedisStream>(keys[j]);
             if (stream == null) continue;
@@ -192,9 +219,7 @@ internal sealed class StreamCommands : ICommandHandler
                 }));
             }
         }
-
-        if (results.Count == 0) return ValueTask.FromResult(RespValue.NullArray);
-        return ValueTask.FromResult<RespValue>(new RespValue.Array(results.ToArray()));
+        return results;
     }
 
     private static ValueTask<RespValue> XTrim(CommandContext ctx)

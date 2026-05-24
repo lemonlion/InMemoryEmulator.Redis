@@ -53,7 +53,7 @@ internal sealed class ListCommands : ICommandHandler
         for (int i = 1; i < ctx.Arguments.Length; i++)
             list.Items.AddFirst(ctx.GetArgBytes(i) ?? Array.Empty<byte>());
         ctx.Database.IncrementVersion(key);
-        ctx.Database.NotifyListPush(key);
+        ctx.Database.NotifyKeyChanged(key);
         return ValueTask.FromResult<RespValue>(new RespValue.Integer(list.Items.Count));
     }
 
@@ -64,7 +64,7 @@ internal sealed class ListCommands : ICommandHandler
         for (int i = 1; i < ctx.Arguments.Length; i++)
             list.Items.AddLast(ctx.GetArgBytes(i) ?? Array.Empty<byte>());
         ctx.Database.IncrementVersion(key);
-        ctx.Database.NotifyListPush(key);
+        ctx.Database.NotifyKeyChanged(key);
         return ValueTask.FromResult<RespValue>(new RespValue.Integer(list.Items.Count));
     }
 
@@ -429,7 +429,7 @@ internal sealed class ListCommands : ICommandHandler
 
         try
         {
-            var readyKey = await ctx.Database.WaitForListPushAsync(keys, cts.Token);
+            var readyKey = await ctx.Database.WaitForKeyChangeAsync(keys, cts.Token);
             var entry = ctx.Database.GetTyped<RedisList>(readyKey);
             if (entry != null && entry.Items.Count > 0)
             {
@@ -471,7 +471,7 @@ internal sealed class ListCommands : ICommandHandler
 
         try
         {
-            var readyKey = await ctx.Database.WaitForListPushAsync(keys, cts.Token);
+            var readyKey = await ctx.Database.WaitForKeyChangeAsync(keys, cts.Token);
             var entry = ctx.Database.GetTyped<RedisList>(readyKey);
             if (entry != null && entry.Items.Count > 0)
             {

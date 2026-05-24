@@ -35,6 +35,8 @@ internal sealed class SortedSetCommands : ICommandHandler
             "ZDIFFSTORE" => ZDiffStore(context),
             "ZSCAN" => ZScan(context),
             "ZRANGESTORE" => ZRangeStore(context),
+            "BZPOPMIN" => BZPopMin(context),
+            "BZPOPMAX" => BZPopMax(context),
             _ => ValueTask.FromResult<RespValue>(new RespValue.Error("ERR", $"unknown command '{context.CommandName}'"))
         };
     }
@@ -89,6 +91,7 @@ internal sealed class SortedSetCommands : ICommandHandler
             }
         }
         ctx.Database.IncrementVersion(key);
+        if (added > 0) ctx.Database.NotifyKeyChanged(key);
         return ValueTask.FromResult<RespValue>(new RespValue.Integer(ch ? added + changed : added));
     }
 
@@ -498,6 +501,84 @@ internal sealed class SortedSetCommands : ICommandHandler
             results.Add(RespValue.FromBulkString(FormatScore(members[i].Score)));
         }
         return ValueTask.FromResult<RespValue>(new RespValue.Array(new RespValue[] { RespValue.FromBulkString(next.ToString()), new RespValue.Array(results.ToArray()) }));
+    }
+
+    private static async ValueTask<RespValue> BZPopMin(CommandContext ctx)
+    {
+        var timeoutSeconds = ctx.GetArgDouble(ctx.Arguments.Length - 1);
+        var keys = new string[ctx.Arguments.Length - 1];
+        for (int i = 0; i < keys.Length; i++) keys[i] = ctx.GetArgString(i);
+
+        foreach (var key in keys)
+        {
+            var zset = GetZSet(ctx, key);
+            if (zset != null && zset.ScoreIndex.Count > 0)
+            {
+                var item = zset.ScoreIndex.Min;
+                zset.Remove(item.Member);
+                if (zset.MemberScores.Count == 0) ctx.Database.RemoveEntry(key);
+                else ctx.Database.IncrementVersion(key);
+                return new RespValue.Array(new RespValue[] { RespValue.FromBulkString(key), RespValue.FromBulkString(item.Member), RespValue.FromBulkString(FormatScore(item.Score)) });
+            }
+        }
+
+        if (timeoutSeconds == 0) timeoutSeconds = 5;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ctx.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
+        try
+        {
+            var readyKey = await ctx.Database.WaitForKeyChangeAsync(keys, cts.Token);
+            var zset = GetZSet(ctx, readyKey);
+            if (zset != null && zset.ScoreIndex.Count > 0)
+            {
+                var item = zset.ScoreIndex.Min;
+                zset.Remove(item.Member);
+                if (zset.MemberScores.Count == 0) ctx.Database.RemoveEntry(readyKey);
+                else ctx.Database.IncrementVersion(readyKey);
+                return new RespValue.Array(new RespValue[] { RespValue.FromBulkString(readyKey), RespValue.FromBulkString(item.Member), RespValue.FromBulkString(FormatScore(item.Score)) });
+            }
+        }
+        catch (OperationCanceledException) { }
+        return RespValue.NullArray;
+    }
+
+    private static async ValueTask<RespValue> BZPopMax(CommandContext ctx)
+    {
+        var timeoutSeconds = ctx.GetArgDouble(ctx.Arguments.Length - 1);
+        var keys = new string[ctx.Arguments.Length - 1];
+        for (int i = 0; i < keys.Length; i++) keys[i] = ctx.GetArgString(i);
+
+        foreach (var key in keys)
+        {
+            var zset = GetZSet(ctx, key);
+            if (zset != null && zset.ScoreIndex.Count > 0)
+            {
+                var item = zset.ScoreIndex.Max;
+                zset.Remove(item.Member);
+                if (zset.MemberScores.Count == 0) ctx.Database.RemoveEntry(key);
+                else ctx.Database.IncrementVersion(key);
+                return new RespValue.Array(new RespValue[] { RespValue.FromBulkString(key), RespValue.FromBulkString(item.Member), RespValue.FromBulkString(FormatScore(item.Score)) });
+            }
+        }
+
+        if (timeoutSeconds == 0) timeoutSeconds = 5;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ctx.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
+        try
+        {
+            var readyKey = await ctx.Database.WaitForKeyChangeAsync(keys, cts.Token);
+            var zset = GetZSet(ctx, readyKey);
+            if (zset != null && zset.ScoreIndex.Count > 0)
+            {
+                var item = zset.ScoreIndex.Max;
+                zset.Remove(item.Member);
+                if (zset.MemberScores.Count == 0) ctx.Database.RemoveEntry(readyKey);
+                else ctx.Database.IncrementVersion(readyKey);
+                return new RespValue.Array(new RespValue[] { RespValue.FromBulkString(readyKey), RespValue.FromBulkString(item.Member), RespValue.FromBulkString(FormatScore(item.Score)) });
+            }
+        }
+        catch (OperationCanceledException) { }
+        return RespValue.NullArray;
     }
 
     // Ref: https://redis.io/docs/latest/commands/zrangestore/

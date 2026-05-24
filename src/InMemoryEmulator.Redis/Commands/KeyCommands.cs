@@ -38,6 +38,7 @@ internal sealed class KeyCommands : ICommandHandler
             "DUMP" => Dump(context),
             "RESTORE" => Restore(context),
             "SORT" => Sort(context),
+            "SORT_RO" => Sort(context),
             "WAIT" => Wait(context),
             _ => ValueTask.FromResult<RespValue>(new RespValue.Error("ERR", $"unknown command '{context.CommandName}'"))
         };
@@ -343,20 +344,111 @@ internal sealed class KeyCommands : ICommandHandler
         return ValueTask.FromResult<RespValue>(new RespValue.Error("ERR", $"unknown subcommand '{sub}'"));
     }
 
+    // Ref: https://redis.io/docs/latest/commands/dump/
+    // Our format: [type_byte][payload]. Not wire-compatible with real Redis RDB but roundtrips within emulator.
     private static ValueTask<RespValue> Dump(CommandContext ctx)
     {
         var key = ctx.GetArgString(0);
         var entry = ctx.Database.GetEntry(key);
         if (entry == null) return ValueTask.FromResult(RespValue.NullBulkString);
-        // Simplified: return the raw bytes for strings, placeholder for others
-        if (entry is RedisString rs)
-            return ValueTask.FromResult<RespValue>(new RespValue.BulkString(rs.Value));
-        return ValueTask.FromResult<RespValue>(new RespValue.BulkString(Encoding.UTF8.GetBytes($"[{entry.TypeName}]")));
+
+        using var ms = new System.IO.MemoryStream();
+        using var bw = new System.IO.BinaryWriter(ms);
+        bw.Write((byte)(entry switch { RedisString => 0, RedisList => 1, RedisSet => 2, RedisHash => 3, RedisSortedSet => 4, _ => 255 }));
+
+        switch (entry)
+        {
+            case RedisString rs:
+                bw.Write(rs.Value.Length);
+                bw.Write(rs.Value);
+                break;
+            case RedisList rl:
+                bw.Write(rl.Items.Count);
+                foreach (var item in rl.Items) { bw.Write(item.Length); bw.Write(item); }
+                break;
+            case RedisSet rs:
+                bw.Write(rs.Members.Count);
+                foreach (var m in rs.Members) { bw.Write(m); }
+                break;
+            case RedisHash rh:
+                bw.Write(rh.Fields.Count);
+                foreach (var (f, v) in rh.Fields) { bw.Write(f); bw.Write(v.Length); bw.Write(v); }
+                break;
+            case RedisSortedSet rz:
+                bw.Write(rz.MemberScores.Count);
+                foreach (var (m, s) in rz.MemberScores) { bw.Write(m); bw.Write(s); }
+                break;
+        }
+        return ValueTask.FromResult<RespValue>(new RespValue.BulkString(ms.ToArray()));
     }
 
+    // Ref: https://redis.io/docs/latest/commands/restore/
     private static ValueTask<RespValue> Restore(CommandContext ctx)
     {
-        return ValueTask.FromResult<RespValue>(new RespValue.Error("ERR", "RESTORE is not fully supported in the emulator"));
+        var key = ctx.GetArgString(0);
+        var ttlMs = ctx.GetArgLong(1);
+        var data = ctx.GetArgBytes(2);
+        if (data == null || data.Length == 0)
+            return ValueTask.FromResult<RespValue>(new RespValue.Error("ERR", "DUMP payload version or checksum are wrong"));
+
+        bool replace = false;
+        for (int i = 3; i < ctx.Arguments.Length; i++)
+            if (ctx.GetArgString(i).Equals("REPLACE", StringComparison.OrdinalIgnoreCase)) replace = true;
+
+        if (!replace && ctx.Database.KeyExists(key))
+            return ValueTask.FromResult<RespValue>(new RespValue.Error("BUSYKEY", "Target key name already exists."));
+
+        using var ms = new System.IO.MemoryStream(data);
+        using var br = new System.IO.BinaryReader(ms);
+        var typeByte = br.ReadByte();
+
+        RedisEntry entry = typeByte switch
+        {
+            0 => new RedisString { Value = br.ReadBytes(br.ReadInt32()) },
+            1 => RestoreList(br),
+            2 => RestoreSet(br),
+            3 => RestoreHash(br),
+            4 => RestoreSortedSet(br),
+            _ => new RedisString { Value = Array.Empty<byte>() }
+        };
+
+        if (ttlMs > 0)
+            entry.Expiry = DateTimeOffset.UtcNow.AddMilliseconds(ttlMs);
+
+        ctx.Database.SetEntry(key, entry);
+        return ValueTask.FromResult(RespValue.Ok);
+    }
+
+    private static RedisList RestoreList(System.IO.BinaryReader br)
+    {
+        var list = new RedisList();
+        var count = br.ReadInt32();
+        for (int i = 0; i < count; i++) list.Items.AddLast(br.ReadBytes(br.ReadInt32()));
+        return list;
+    }
+
+    private static RedisSet RestoreSet(System.IO.BinaryReader br)
+    {
+        var set = new RedisSet();
+        var count = br.ReadInt32();
+        for (int i = 0; i < count; i++) set.Members.Add(br.ReadString());
+        return set;
+    }
+
+    private static RedisHash RestoreHash(System.IO.BinaryReader br)
+    {
+        var hash = new RedisHash();
+        var count = br.ReadInt32();
+        for (int i = 0; i < count; i++) { var f = br.ReadString(); hash.Fields[f] = br.ReadBytes(br.ReadInt32()); }
+        return hash;
+    }
+
+    private static RedisSortedSet RestoreSortedSet(System.IO.BinaryReader br)
+    {
+        var zset = new RedisSortedSet();
+        var count = br.ReadInt32();
+        for (int i = 0; i < count; i++) { var m = br.ReadString(); zset.Add(m, br.ReadDouble()); }
+        return zset;
     }
 
     // Ref: https://redis.io/docs/latest/commands/sort/

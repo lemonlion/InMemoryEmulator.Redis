@@ -103,6 +103,7 @@ internal sealed class CommandRouter
         Register("DUMP", keys);
         Register("RESTORE", keys);
         Register("SORT", keys);
+        Register("SORT_RO", keys);
         Register("WAIT", keys);
 
         // Hash commands
@@ -188,6 +189,8 @@ internal sealed class CommandRouter
         Register("ZDIFFSTORE", sortedSets);
         Register("ZSCAN", sortedSets);
         Register("ZRANGESTORE", sortedSets);
+        Register("BZPOPMIN", sortedSets);
+        Register("BZPOPMAX", sortedSets);
 
         // Pub/Sub commands
         Register("SUBSCRIBE", pubSubCmds);
