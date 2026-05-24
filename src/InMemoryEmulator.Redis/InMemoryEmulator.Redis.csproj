@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>InMemoryEmulator.Redis</RootNamespace>
+    <Description>High-fidelity in-process Redis emulator for .NET integration tests</Description>
+    <PackageTags>redis;testing;emulator;in-memory;integration-tests</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="StackExchange.Redis" Version="2.8.16" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="8.0.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="InMemoryEmulator.Redis.Tests.Unit" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,37 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore
+        run: dotnet restore InMemoryEmulator.Redis.sln
+
+      - name: Build
+        run: dotnet build InMemoryEmulator.Redis.sln --configuration Release --no-restore
+
+      - name: Run Tests (In-Memory)
+        env:
+          REDIS_TEST_TARGET: inmemory
+        run: dotnet test tests/InMemoryEmulator.Redis.Tests.Integration --configuration Release --no-build
+
+      - name: Pack
+        run: dotnet pack src/InMemoryEmulator.Redis/InMemoryEmulator.Redis.csproj --configuration Release --no-build --output ./nupkgs
+
+      - name: Push to NuGet
+        if: env.NUGET_API_KEY != ''
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+        run: dotnet nuget push ./nupkgs/*.nupkg --api-key ${{ secrets.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate

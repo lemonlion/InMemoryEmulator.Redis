@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore
+        run: dotnet restore InMemoryEmulator.Redis.sln
+
+      - name: Build
+        run: dotnet build InMemoryEmulator.Redis.sln --configuration Release --no-restore
+
+  test-inmemory:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Run Unit Tests
+        run: dotnet test tests/InMemoryEmulator.Redis.Tests.Unit --configuration Release --logger "trx;LogFileName=unit-results.trx" --results-directory ./TestResults
+
+      - name: Run Integration Tests (In-Memory)
+        env:
+          REDIS_TEST_TARGET: inmemory
+        run: dotnet test tests/InMemoryEmulator.Redis.Tests.Integration --configuration Release --logger "trx;LogFileName=integration-inmemory-results.trx" --results-directory ./TestResults
+
+      - name: Upload Test Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-inmemory
+          path: ./TestResults/*.trx
+
+  test-docker:
+    needs: build
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Run Integration Tests (Docker Redis)
+        env:
+          REDIS_TEST_TARGET: docker
+        run: dotnet test tests/InMemoryEmulator.Redis.Tests.Integration --configuration Release --logger "trx;LogFileName=integration-docker-results.trx" --results-directory ./TestResults --filter "Target!=InMemoryOnly"
+
+      - name: Upload Test Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-docker
+          path: ./TestResults/*.trx
