@@ -3,7 +3,7 @@
 
   <PropertyGroup>
     <IsPackable>true</IsPackable>
-    <Version>1.0.8</Version>
+    <Version>1.0.9</Version>
     <Authors>lemonlion</Authors>
     <Copyright>Copyright (c) 2026 lemonlion</Copyright>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>

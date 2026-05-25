@@ -324,25 +324,106 @@ internal sealed class KeyCommands : ICommandHandler
         {
             var key = ctx.GetArgString(1);
             var entry = ctx.Database.GetEntry(key);
+            // Ref: https://redis.io/docs/latest/commands/object-encoding/
+            //   "If the key you provided does not exist, a nil reply is returned."
+            //   (real Redis returns -ERR no such key)
             if (entry == null)
                 return ValueTask.FromResult<RespValue>(new RespValue.Error("ERR", "no such key"));
-            var encoding = entry switch
-            {
-                RedisString => "embstr",
-                _ => "raw"
-            };
+            var encoding = GetObjectEncoding(entry);
             return ValueTask.FromResult<RespValue>(RespValue.FromBulkString(encoding));
         }
         if (sub == "REFCOUNT" && ctx.Arguments.Length > 1)
+        {
+            var key = ctx.GetArgString(1);
+            var entry = ctx.Database.GetEntry(key);
+            // Ref: https://redis.io/docs/latest/commands/object-refcount/
+            //   "Returns the reference count of the object stored at <key>."
+            //   Returns nil when the key does not exist.
+            if (entry == null)
+                return ValueTask.FromResult(RespValue.NullBulkString);
             return ValueTask.FromResult<RespValue>(new RespValue.Integer(1));
+        }
         if (sub == "IDLETIME" && ctx.Arguments.Length > 1)
+        {
+            var key = ctx.GetArgString(1);
+            var entry = ctx.Database.GetEntry(key);
+            // Ref: https://redis.io/docs/latest/commands/object-idletime/
+            //   Returns nil when the key does not exist.
+            if (entry == null)
+                return ValueTask.FromResult(RespValue.NullBulkString);
             return ValueTask.FromResult<RespValue>(new RespValue.Integer(0));
+        }
         if (sub == "FREQ" && ctx.Arguments.Length > 1)
+        {
+            var key = ctx.GetArgString(1);
+            var entry = ctx.Database.GetEntry(key);
+            // Ref: https://redis.io/docs/latest/commands/object-freq/
+            //   Returns nil when the key does not exist.
+            if (entry == null)
+                return ValueTask.FromResult(RespValue.NullBulkString);
             return ValueTask.FromResult<RespValue>(new RespValue.Integer(0));
+        }
         if (sub == "HELP")
             return ValueTask.FromResult(RespValue.EmptyArray);
 
         return ValueTask.FromResult<RespValue>(new RespValue.Error("ERR", $"unknown subcommand '{sub}'"));
+    }
+
+    // Ref: https://redis.io/docs/latest/commands/object-encoding/
+    //   "Objects can be encoded in different ways:"
+    //   Strings: "int" (integers representable as 64-bit signed), "embstr" (strings <= 44 bytes),
+    //            "raw" (strings > 44 bytes)
+    //   Lists:   "listpack" (small lists, Redis 7+) or "quicklist" (large lists)
+    //   Sets:    "listpack" (small non-integer sets), "intset" (all-integer sets), "hashtable" (large sets)
+    //   Hashes:  "listpack" (small hashes) or "hashtable" (large hashes)
+    //   Sorted sets: "listpack" (small zsets) or "skiplist" (large zsets)
+    // Ref: https://redis.io/docs/latest/develop/data-types/
+    // Thresholds mirror Redis 7+ defaults:
+    //   list-max-listpack-size 128 entries / 64 bytes per element
+    //   hash-max-listpack-entries 128, hash-max-listpack-value 64
+    //   set-max-listpack-entries 128
+    //   zset-max-listpack-entries 128, zset-max-listpack-value 64
+    private static string GetObjectEncoding(RedisEntry entry)
+    {
+        switch (entry)
+        {
+            case RedisString rs:
+            {
+                // Ref: https://redis.io/docs/latest/commands/object-encoding/
+                //   "int" if the value can be represented as a 64-bit signed integer
+                var str = System.Text.Encoding.UTF8.GetString(rs.Value);
+                if (long.TryParse(str, System.Globalization.NumberStyles.Integer,
+                        System.Globalization.CultureInfo.InvariantCulture, out _))
+                    return "int";
+                // "embstr" for strings <= 44 bytes, "raw" for longer strings
+                return rs.Value.Length <= 44 ? "embstr" : "raw";
+            }
+            case RedisList rl:
+                // Ref: https://redis.io/docs/latest/develop/data-types/lists/
+                //   Small lists use "listpack" (Redis 7+), large lists use "quicklist"
+                return rl.Items.Count <= 128 ? "listpack" : "quicklist";
+            case RedisHash rh:
+                // Ref: https://redis.io/docs/latest/develop/data-types/hashes/
+                //   Small hashes use "listpack", large hashes use "hashtable"
+                return rh.Fields.Count <= 128 ? "listpack" : "hashtable";
+            case RedisSet rs:
+            {
+                // Ref: https://redis.io/docs/latest/develop/data-types/sets/
+                //   All-integer small sets use "intset", small non-integer sets use "listpack",
+                //   large sets use "hashtable"
+                if (rs.Members.Count <= 512 &&
+                    rs.Members.All(m => long.TryParse(m, System.Globalization.NumberStyles.Integer,
+                        System.Globalization.CultureInfo.InvariantCulture, out _)))
+                    return "intset";
+                return rs.Members.Count <= 128 ? "listpack" : "hashtable";
+            }
+            case RedisSortedSet rz:
+                // Ref: https://redis.io/docs/latest/develop/data-types/sorted-sets/
+                //   Small sorted sets use "listpack", large ones use "skiplist"
+                return rz.MemberScores.Count <= 128 ? "listpack" : "skiplist";
+            default:
+                return "raw";
+        }
     }
 
     // Ref: https://redis.io/docs/latest/commands/dump/
