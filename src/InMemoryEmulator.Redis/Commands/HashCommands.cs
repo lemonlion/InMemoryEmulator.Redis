@@ -873,20 +873,28 @@ internal sealed class HashCommands : ICommandHandler
         int fieldsStart = idx + 2;
 
         var hash = GetOrCreateHash(ctx, key);
-        bool allSet = true;
+
+        // FNX/FXX are all-or-nothing: check all fields first
+        // Ref: https://redis.io/docs/latest/commands/hsetex/
+        //   FNX: set all fields only if none of them exist; FXX: set all fields only if all of them exist.
+        if (fnx || fxx)
+        {
+            for (int i = 0; i < numFields; i++)
+            {
+                var field = ctx.GetArgString(fieldsStart + i * 2);
+                bool exists = hash.FieldExists(field);
+                if ((fnx && exists) || (fxx && !exists))
+                {
+                    ctx.Database.IncrementVersion(key);
+                    return ValueTask.FromResult<RespValue>(new RespValue.Integer(0));
+                }
+            }
+        }
 
         for (int i = 0; i < numFields; i++)
         {
             var field = ctx.GetArgString(fieldsStart + i * 2);
             var value = ctx.GetArgBytes(fieldsStart + i * 2 + 1) ?? Array.Empty<byte>();
-            bool exists = hash.FieldExists(field);
-
-            // FNX: skip existing fields; FXX: skip new fields
-            if ((fnx && exists) || (fxx && !exists))
-            {
-                allSet = false;
-                continue;
-            }
 
             hash.Fields[field] = value;
 
@@ -899,6 +907,6 @@ internal sealed class HashCommands : ICommandHandler
         ctx.Database.IncrementVersion(key);
         // Ref: https://redis.io/docs/latest/commands/hsetex/
         //   Returns 0 if no fields were set, 1 if all the fields were set.
-        return ValueTask.FromResult<RespValue>(new RespValue.Integer(allSet ? 1 : 0));
+        return ValueTask.FromResult<RespValue>(new RespValue.Integer(1));
     }
 }
