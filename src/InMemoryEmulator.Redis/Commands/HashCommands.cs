@@ -68,9 +68,12 @@ internal sealed class HashCommands : ICommandHandler
             var value = ctx.GetArgBytes(i + 1) ?? Array.Empty<byte>();
             // Ref: https://redis.io/docs/latest/commands/hset/
             //   "If field already exists, its value is overwritten."
-            //   Per-field expiry is preserved when overwriting a field with HSET.
+            // Ref: https://redis.io/docs/latest/develop/data-types/hashes/#field-expiration
+            //   "If a field with an active TTL is overwritten by HSET or equivalent commands,
+            //    the existing TTL is removed and the field becomes persistent again."
             if (!hash.FieldExists(field)) count++;
             hash.Fields[field] = value;
+            hash.FieldExpiry.Remove(field);
         }
         ctx.Database.IncrementVersion(key);
         return ValueTask.FromResult<RespValue>(new RespValue.Integer(count));
@@ -177,7 +180,11 @@ internal sealed class HashCommands : ICommandHandler
         {
             var field = ctx.GetArgString(i);
             var value = ctx.GetArgBytes(i + 1) ?? Array.Empty<byte>();
+            // Ref: https://redis.io/docs/latest/develop/data-types/hashes/#field-expiration
+            //   "If a field with an active TTL is overwritten by HSET or equivalent commands
+            //    (like HMSET or HSETEX without options), the existing TTL is removed."
             hash.Fields[field] = value;
+            hash.FieldExpiry.Remove(field);
         }
         ctx.Database.IncrementVersion(key);
         return ValueTask.FromResult(RespValue.Ok);

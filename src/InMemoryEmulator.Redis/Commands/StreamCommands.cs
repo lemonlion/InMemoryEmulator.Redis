@@ -736,6 +736,7 @@ internal sealed class StreamCommands : ICommandHandler
     //   "Normally the last ID of the stream is updated only when XADD is called."
     //   "Returns OK if the command was executed successfully."
     //   "The command only sets the last ID if it is greater than the current one."
+    //   "Returns an error if the specified ID is smaller than the stream's top item."
     private static ValueTask<RespValue> XSetId(CommandContext ctx)
     {
         var key = ctx.GetArgString(0);
@@ -743,14 +744,24 @@ internal sealed class StreamCommands : ICommandHandler
 
         var stream = ctx.Database.GetTyped<RedisStream>(key);
         if (stream == null)
-            return ValueTask.FromResult<RespValue>(new RespValue.Error("ERR", "The XSETID subcommand requires the key to exist."));
+            return ValueTask.FromResult<RespValue>(new RespValue.Error("ERR", "no such key"));
+
+        // Ref: https://redis.io/docs/latest/commands/xsetid/
+        //   Redis rejects the command if the given ID is smaller than the last entry in the stream.
+        if (stream.Entries.Count > 0)
+        {
+            var topEntryId = stream.Entries[^1].Id;
+            if (RedisStream.CompareIds(newId, topEntryId) < 0)
+                return ValueTask.FromResult<RespValue>(new RespValue.Error("ERR",
+                    "The ID specified in XSETID is smaller than the target stream top item"));
+        }
 
         // Parse the new ID
         var parts = newId.Split('-');
         var newTs = long.Parse(parts[0]);
         var newSeq = parts.Length > 1 ? long.Parse(parts[1]) : 0L;
 
-        // Only update if the new ID is greater than current
+        // Only update if the new ID is greater than current last-generated-id
         var currentId = $"{stream.LastTimestamp}-{stream.LastSequence}";
         if (RedisStream.CompareIds(newId, currentId) > 0)
         {

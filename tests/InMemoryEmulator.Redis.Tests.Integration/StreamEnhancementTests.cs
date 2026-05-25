@@ -32,10 +32,13 @@ public class StreamEnhancementTests : IAsyncLifetime
     public async Task XSetId_sets_last_id_of_stream()
     {
         // Arrange: create a stream with one entry
-        await _db.StreamAddAsync("xsetid_stream", new NameValueEntry[] { new("f", "v") });
+        var entryId = await _db.StreamAddAsync("xsetid_stream", new NameValueEntry[] { new("f", "v") });
+        // Parse the auto-generated entry ID to use a value well above it
+        var entryTs = long.Parse(entryId.ToString().Split('-')[0]);
+        var highId = $"{entryTs + 1000000}-0";
 
-        // Act: set the last ID to a high value
-        var result = await _db.ExecuteAsync("XSETID", "xsetid_stream", "99999-0");
+        // Act: set the last ID to a value above the existing entry
+        var result = await _db.ExecuteAsync("XSETID", "xsetid_stream", highId);
 
         // Assert: returns OK
         Assert.Equal("OK", result.ToString());
@@ -44,36 +47,40 @@ public class StreamEnhancementTests : IAsyncLifetime
         var newId = await _db.StreamAddAsync("xsetid_stream", new NameValueEntry[] { new("f2", "v2") });
         var parts = newId.ToString().Split('-');
         var ts = long.Parse(parts[0]);
-        // The new auto-generated ID should be >= 99999 (either same timestamp with higher seq, or higher timestamp)
-        Assert.True(ts >= 99999, $"Expected timestamp >= 99999, got {ts}");
+        Assert.True(ts >= entryTs + 1000000,
+            $"Expected timestamp >= {entryTs + 1000000}, got {ts}");
     }
 
     [Fact]
     public async Task XSetId_does_not_decrease_last_id()
     {
         // Arrange: create a stream and set a high ID
-        await _db.StreamAddAsync("xsetid_nodec", new NameValueEntry[] { new("f", "v") });
-        await _db.ExecuteAsync("XSETID", "xsetid_nodec", "99999-0");
+        var entryId = await _db.StreamAddAsync("xsetid_nodec", new NameValueEntry[] { new("f", "v") });
+        var entryTs = long.Parse(entryId.ToString().Split('-')[0]);
+        var highId = $"{entryTs + 2000000}-0";
+        var midId = $"{entryTs + 1000000}-0";
+        await _db.ExecuteAsync("XSETID", "xsetid_nodec", highId);
 
-        // Act: try to set to a lower ID
-        var result = await _db.ExecuteAsync("XSETID", "xsetid_nodec", "1-0");
+        // Act: try to set to a lower ID (but still above the entry)
+        var result = await _db.ExecuteAsync("XSETID", "xsetid_nodec", midId);
         Assert.Equal("OK", result.ToString());
 
-        // Assert: the auto-gen ID should still be based on the higher value (99999-0)
+        // Assert: the auto-gen ID should still be based on the higher value
         var newId = await _db.StreamAddAsync("xsetid_nodec", new NameValueEntry[] { new("f2", "v2") });
         var parts = newId.ToString().Split('-');
         var ts = long.Parse(parts[0]);
-        Assert.True(ts >= 99999, $"Expected timestamp >= 99999 after XSETID with lower value, got {ts}");
+        Assert.True(ts >= entryTs + 2000000,
+            $"Expected timestamp >= {entryTs + 2000000} after XSETID with lower value, got {ts}");
     }
 
     [Fact]
     public async Task XSetId_on_nonexistent_key_returns_error()
     {
         // Ref: https://redis.io/docs/latest/commands/xsetid/
-        //   Requires key to exist
+        //   Returns "ERR no such key" when the stream does not exist.
         var ex = await Assert.ThrowsAsync<RedisServerException>(
             async () => await _db.ExecuteAsync("XSETID", "nonexistent_stream", "1-0"));
-        Assert.Contains("requires the key to exist", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("no such key", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     // ========================================================================

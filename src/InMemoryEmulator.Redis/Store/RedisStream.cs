@@ -10,15 +10,19 @@ internal sealed class RedisStream : RedisEntry
 
     public string GenerateId()
     {
+        // Ref: https://redis.io/docs/latest/commands/xadd/
+        //   "The ID is composed of <millisecondsTime>-<sequenceNumber>."
+        //   "If the current time is behind LastTimestamp (e.g., after XSETID or clock skew),
+        //    Redis keeps LastTimestamp and increments the sequence."
         var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        if (now == LastTimestamp)
-        {
-            LastSequence++;
-        }
-        else
+        if (now > LastTimestamp)
         {
             LastTimestamp = now;
             LastSequence = 0;
+        }
+        else
+        {
+            LastSequence++;
         }
         return $"{LastTimestamp}-{LastSequence}";
     }
