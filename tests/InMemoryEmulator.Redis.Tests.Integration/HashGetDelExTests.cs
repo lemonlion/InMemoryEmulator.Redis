@@ -217,14 +217,14 @@ public class HashGetDelExTests : IAsyncLifetime
     [Fact]
     public async Task HSetEx_sets_fields_with_expiry_in_seconds()
     {
-        var result = await _db.ExecuteAsync("HSETEX", "hse_ex", "EX", "60", "2", "f1", "v1", "f2", "v2");
+        // Ref: https://redis.io/docs/latest/commands/hsetex/
+        //   Syntax: HSETEX key <EX seconds|...> FIELDS numfields field value [field value ...]
+        var result = await _db.ExecuteAsync("HSETEX", "hse_ex", "EX", "60", "FIELDS", "2", "f1", "v1", "f2", "v2");
         Assert.Equal(2, (long)result);
 
-        // Verify values
         Assert.Equal("v1", (await _db.HashGetAsync("hse_ex", "f1")).ToString());
         Assert.Equal("v2", (await _db.HashGetAsync("hse_ex", "f2")).ToString());
 
-        // Verify TTL
         var ttlResult = await _db.ExecuteAsync("HTTL", "hse_ex", "FIELDS", "1", "f1");
         var ttlArr = (RedisResult[])ttlResult!;
         Assert.InRange((long)ttlArr[0], 50, 60);
@@ -233,7 +233,7 @@ public class HashGetDelExTests : IAsyncLifetime
     [Fact]
     public async Task HSetEx_sets_fields_with_expiry_in_milliseconds()
     {
-        await _db.ExecuteAsync("HSETEX", "hse_px", "PX", "60000", "1", "f1", "v1");
+        await _db.ExecuteAsync("HSETEX", "hse_px", "PX", "60000", "FIELDS", "1", "f1", "v1");
 
         var pttlResult = await _db.ExecuteAsync("HPTTL", "hse_px", "FIELDS", "1", "f1");
         var pttlArr = (RedisResult[])pttlResult!;
@@ -244,7 +244,7 @@ public class HashGetDelExTests : IAsyncLifetime
     public async Task HSetEx_sets_fields_with_absolute_timestamp()
     {
         var futureTs = DateTimeOffset.UtcNow.AddSeconds(60).ToUnixTimeSeconds();
-        await _db.ExecuteAsync("HSETEX", "hse_exat", "EXAT", futureTs.ToString(), "1", "f1", "v1");
+        await _db.ExecuteAsync("HSETEX", "hse_exat", "EXAT", futureTs.ToString(), "FIELDS", "1", "f1", "v1");
 
         var etResult = await _db.ExecuteAsync("HEXPIRETIME", "hse_exat", "FIELDS", "1", "f1");
         var etArr = (RedisResult[])etResult!;
@@ -252,16 +252,19 @@ public class HashGetDelExTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task HSetEx_without_expiry_option_sets_fields_without_expiry()
+    public async Task HSetEx_with_keepttl_preserves_existing_expiry()
     {
-        var result = await _db.ExecuteAsync("HSETEX", "hse_noexp", "1", "f1", "v1");
-        Assert.Equal(1, (long)result);
+        // Ref: https://redis.io/docs/latest/commands/hsetex/
+        //   KEEPTTL retains the existing per-field TTL when overwriting.
+        await _db.ExecuteAsync("HSETEX", "hse_kt", "EX", "60", "FIELDS", "1", "f1", "v1");
+        var result = await _db.ExecuteAsync("HSETEX", "hse_kt", "KEEPTTL", "FIELDS", "1", "f1", "v2");
+        Assert.Equal(0, (long)result);
 
-        Assert.Equal("v1", (await _db.HashGetAsync("hse_noexp", "f1")).ToString());
+        Assert.Equal("v2", (await _db.HashGetAsync("hse_kt", "f1")).ToString());
 
-        var ttlResult = await _db.ExecuteAsync("HTTL", "hse_noexp", "FIELDS", "1", "f1");
+        var ttlResult = await _db.ExecuteAsync("HTTL", "hse_kt", "FIELDS", "1", "f1");
         var ttlArr = (RedisResult[])ttlResult!;
-        Assert.Equal(-1, (long)ttlArr[0]);
+        Assert.InRange((long)ttlArr[0], 50, 60);
     }
 
     [Fact]
@@ -270,7 +273,7 @@ public class HashGetDelExTests : IAsyncLifetime
         await _db.HashSetAsync("hse_count", "f1", "old");
 
         // f1 = update, f2 = new
-        var result = await _db.ExecuteAsync("HSETEX", "hse_count", "EX", "60", "2", "f1", "new_val", "f2", "v2");
+        var result = await _db.ExecuteAsync("HSETEX", "hse_count", "EX", "60", "FIELDS", "2", "f1", "new_val", "f2", "v2");
         Assert.Equal(1, (long)result); // Only f2 is new
     }
 }

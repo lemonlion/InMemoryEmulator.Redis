@@ -804,45 +804,60 @@ internal sealed class HashCommands : ICommandHandler
     }
 
     // Ref: https://redis.io/docs/latest/commands/hsetex/
-    //   "Set the value and optionally the expiration of one or more fields."
-    //   Syntax: HSETEX key [EX seconds | PX milliseconds | EXAT unix-time-seconds | PXAT unix-time-milliseconds] numfields field value [field value ...]
-    //   Returns the number of new fields added (same as HSET).
+    //   "Set the value and the expiration of one or more fields."
+    //   Syntax: HSETEX key <EX seconds | PX milliseconds | EXAT unix-time-seconds | PXAT unix-time-milliseconds | KEEPTTL> FIELDS numfields field value [field value ...]
+    //   Expiry option is mandatory. Returns the number of new fields added (same as HSET).
     private static ValueTask<RespValue> HSetEx(CommandContext ctx)
     {
         var key = ctx.GetArgString(0);
 
-        // Parse the expiry option
-        DateTimeOffset? expiry = null;
-        int fieldCountIndex = 1;
+        if (ctx.Arguments.Length < 4)
+            return ValueTask.FromResult<RespValue>(new RespValue.Error("ERR",
+                "wrong number of arguments for 'hsetex' command"));
 
-        if (ctx.Arguments.Length > 1)
+        // Parse the expiry option (mandatory)
+        DateTimeOffset? expiry = null;
+        bool keepTtl = false;
+        int fieldsKeywordIndex;
+
+        var opt = ctx.GetArgString(1).ToUpperInvariant();
+        switch (opt)
         {
-            var opt = ctx.GetArgString(1).ToUpperInvariant();
-            switch (opt)
-            {
-                case "EX":
-                    expiry = DateTimeOffset.UtcNow.AddSeconds(ctx.GetArgLong(2));
-                    fieldCountIndex = 3;
-                    break;
-                case "PX":
-                    expiry = DateTimeOffset.UtcNow.AddMilliseconds(ctx.GetArgLong(2));
-                    fieldCountIndex = 3;
-                    break;
-                case "EXAT":
-                    expiry = DateTimeOffset.FromUnixTimeSeconds(ctx.GetArgLong(2));
-                    fieldCountIndex = 3;
-                    break;
-                case "PXAT":
-                    expiry = DateTimeOffset.FromUnixTimeMilliseconds(ctx.GetArgLong(2));
-                    fieldCountIndex = 3;
-                    break;
-            }
+            case "EX":
+                expiry = DateTimeOffset.UtcNow.AddSeconds(ctx.GetArgLong(2));
+                fieldsKeywordIndex = 3;
+                break;
+            case "PX":
+                expiry = DateTimeOffset.UtcNow.AddMilliseconds(ctx.GetArgLong(2));
+                fieldsKeywordIndex = 3;
+                break;
+            case "EXAT":
+                expiry = DateTimeOffset.FromUnixTimeSeconds(ctx.GetArgLong(2));
+                fieldsKeywordIndex = 3;
+                break;
+            case "PXAT":
+                expiry = DateTimeOffset.FromUnixTimeMilliseconds(ctx.GetArgLong(2));
+                fieldsKeywordIndex = 3;
+                break;
+            case "KEEPTTL":
+                keepTtl = true;
+                fieldsKeywordIndex = 2;
+                break;
+            default:
+                return ValueTask.FromResult<RespValue>(new RespValue.Error("ERR",
+                    $"unknown argument: {ctx.GetArgString(1)}"));
         }
 
-        var numFields = (int)ctx.GetArgLong(fieldCountIndex);
+        // Require FIELDS keyword
+        if (fieldsKeywordIndex >= ctx.Arguments.Length ||
+            !ctx.GetArgString(fieldsKeywordIndex).Equals("FIELDS", StringComparison.OrdinalIgnoreCase))
+            return ValueTask.FromResult<RespValue>(new RespValue.Error("ERR",
+                $"unknown argument: {(fieldsKeywordIndex < ctx.Arguments.Length ? ctx.GetArgString(fieldsKeywordIndex) : "")}"));
+
+        var numFields = (int)ctx.GetArgLong(fieldsKeywordIndex + 1);
         var hash = GetOrCreateHash(ctx, key);
 
-        int fieldsStart = fieldCountIndex + 1;
+        int fieldsStart = fieldsKeywordIndex + 2;
         int count = 0;
         for (int i = 0; i < numFields; i++)
         {
@@ -856,10 +871,8 @@ internal sealed class HashCommands : ICommandHandler
             {
                 hash.FieldExpiry[field] = expiry.Value;
             }
-            else
+            else if (!keepTtl)
             {
-                // Ref: https://redis.io/docs/latest/commands/hsetex/
-                //   Without an expiry option, the fields are set without expiry.
                 hash.FieldExpiry.Remove(field);
             }
         }

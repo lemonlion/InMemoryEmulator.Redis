@@ -52,25 +52,29 @@ public class StreamEnhancementTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task XSetId_does_not_decrease_last_id()
+    public async Task XSetId_allows_decreasing_last_id()
     {
-        // Arrange: create a stream and set a high ID
-        var entryId = await _db.StreamAddAsync("xsetid_nodec", new NameValueEntry[] { new("f", "v") });
+        // Ref: https://redis.io/docs/latest/commands/xsetid/
+        //   XSETID sets the last-entry-id, even if the new value is lower than the current one
+        //   (as long as it's >= the top actual entry in the stream).
+        var entryId = await _db.StreamAddAsync("xsetid_dec", new NameValueEntry[] { new("f", "v") });
         var entryTs = long.Parse(entryId.ToString().Split('-')[0]);
         var highId = $"{entryTs + 2000000}-0";
         var midId = $"{entryTs + 1000000}-0";
-        await _db.ExecuteAsync("XSETID", "xsetid_nodec", highId);
+        await _db.ExecuteAsync("XSETID", "xsetid_dec", highId);
 
-        // Act: try to set to a lower ID (but still above the entry)
-        var result = await _db.ExecuteAsync("XSETID", "xsetid_nodec", midId);
+        // Act: set to a lower ID (but still above the entry)
+        var result = await _db.ExecuteAsync("XSETID", "xsetid_dec", midId);
         Assert.Equal("OK", result.ToString());
 
-        // Assert: the auto-gen ID should still be based on the higher value
-        var newId = await _db.StreamAddAsync("xsetid_nodec", new NameValueEntry[] { new("f2", "v2") });
+        // Assert: XADD should use the new (lower) last-entry-id
+        var newId = await _db.StreamAddAsync("xsetid_dec", new NameValueEntry[] { new("f2", "v2") });
         var parts = newId.ToString().Split('-');
         var ts = long.Parse(parts[0]);
-        Assert.True(ts >= entryTs + 2000000,
-            $"Expected timestamp >= {entryTs + 2000000} after XSETID with lower value, got {ts}");
+        Assert.True(ts >= entryTs + 1000000,
+            $"Expected timestamp >= {entryTs + 1000000} after XSETID decrease, got {ts}");
+        Assert.True(ts < entryTs + 2000000,
+            $"Expected timestamp < {entryTs + 2000000} (XSETID should have decreased), got {ts}");
     }
 
     [Fact]

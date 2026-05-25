@@ -734,9 +734,8 @@ internal sealed class StreamCommands : ICommandHandler
     // Ref: https://redis.io/docs/latest/commands/xsetid/
     //   "XSETID is used to set the last ID of a stream without adding entries to it."
     //   "Normally the last ID of the stream is updated only when XADD is called."
-    //   "Returns OK if the command was executed successfully."
-    //   "The command only sets the last ID if it is greater than the current one."
     //   "Returns an error if the specified ID is smaller than the stream's top item."
+    //   XSETID allows decreasing the last-entry-id (as long as it stays >= top entry).
     private static ValueTask<RespValue> XSetId(CommandContext ctx)
     {
         var key = ctx.GetArgString(0);
@@ -756,21 +755,12 @@ internal sealed class StreamCommands : ICommandHandler
                     "The ID specified in XSETID is smaller than the target stream top item"));
         }
 
-        // Parse the new ID
         var parts = newId.Split('-');
         var newTs = long.Parse(parts[0]);
         var newSeq = parts.Length > 1 ? long.Parse(parts[1]) : 0L;
 
-        // Only update if the new ID is greater than current last-generated-id
-        var currentId = $"{stream.LastTimestamp}-{stream.LastSequence}";
-        if (RedisStream.CompareIds(newId, currentId) > 0)
-        {
-            stream.LastTimestamp = newTs;
-            stream.LastSequence = newSeq;
-        }
-
-        // Parse optional ENTRIESADDED — accepted but ignored in the emulator
-        // (Redis uses it for internal bookkeeping)
+        stream.LastTimestamp = newTs;
+        stream.LastSequence = newSeq;
 
         return ValueTask.FromResult(RespValue.Ok);
     }
