@@ -427,3 +427,7 @@ FodyWeavers.xsd
 *.msix
 *.msm
 *.msp
+
+# Claude Code temporary files
+.claude/worktrees/
+.claude/scheduled_tasks.lock
