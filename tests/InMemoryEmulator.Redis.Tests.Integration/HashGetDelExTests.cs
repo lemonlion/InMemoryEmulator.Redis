@@ -283,10 +283,11 @@ public class HashGetDelExTests : IAsyncLifetime
     {
         // Ref: https://redis.io/docs/latest/commands/hsetex/
         //   FNX: Only set new fields (skip existing fields).
+        //   Returns 0 because not ALL fields were set (f1 was skipped).
         await _db.HashSetAsync("hse_fnx", "f1", "old");
 
         var result = await _db.ExecuteAsync("HSETEX", "hse_fnx", "FNX", "EX", "60", "FIELDS", "2", "f1", "new_val", "f2", "v2");
-        Assert.Equal(1, (long)result);
+        Assert.Equal(0, (long)result);
 
         Assert.Equal("old", (await _db.HashGetAsync("hse_fnx", "f1")).ToString());
         Assert.Equal("v2", (await _db.HashGetAsync("hse_fnx", "f2")).ToString());
@@ -297,10 +298,11 @@ public class HashGetDelExTests : IAsyncLifetime
     {
         // Ref: https://redis.io/docs/latest/commands/hsetex/
         //   FXX: Only set existing fields (skip new fields).
+        //   Returns 0 because not ALL fields were set (f2 was skipped).
         await _db.HashSetAsync("hse_fxx", "f1", "old");
 
         var result = await _db.ExecuteAsync("HSETEX", "hse_fxx", "FXX", "EX", "60", "FIELDS", "2", "f1", "new_val", "f2", "v2");
-        Assert.Equal(1, (long)result);
+        Assert.Equal(0, (long)result);
 
         Assert.Equal("new_val", (await _db.HashGetAsync("hse_fxx", "f1")).ToString());
         Assert.True((await _db.HashGetAsync("hse_fxx", "f2")).IsNull);

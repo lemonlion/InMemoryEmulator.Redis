@@ -873,7 +873,7 @@ internal sealed class HashCommands : ICommandHandler
         int fieldsStart = idx + 2;
 
         var hash = GetOrCreateHash(ctx, key);
-        bool anySet = false;
+        bool allSet = true;
 
         for (int i = 0; i < numFields; i++)
         {
@@ -882,11 +882,13 @@ internal sealed class HashCommands : ICommandHandler
             bool exists = hash.FieldExists(field);
 
             // FNX: skip existing fields; FXX: skip new fields
-            if (fnx && exists) continue;
-            if (fxx && !exists) continue;
+            if ((fnx && exists) || (fxx && !exists))
+            {
+                allSet = false;
+                continue;
+            }
 
             hash.Fields[field] = value;
-            anySet = true;
 
             if (expiry.HasValue)
                 hash.FieldExpiry[field] = expiry.Value;
@@ -897,6 +899,6 @@ internal sealed class HashCommands : ICommandHandler
         ctx.Database.IncrementVersion(key);
         // Ref: https://redis.io/docs/latest/commands/hsetex/
         //   Returns 0 if no fields were set, 1 if all the fields were set.
-        return ValueTask.FromResult<RespValue>(new RespValue.Integer(anySet ? 1 : 0));
+        return ValueTask.FromResult<RespValue>(new RespValue.Integer(allSet ? 1 : 0));
     }
 }
