@@ -448,6 +448,10 @@ internal sealed class SortedSetCommands : ICommandHandler
         return ValueTask.FromResult<RespValue>(new RespValue.Array(filtered));
     }
 
+    // Ref: https://redis.io/docs/latest/commands/zlexcount/
+    //   "Returns the number of elements in the sorted set at key with a value between
+    //    min and max. The min and max arguments have the same meaning as described for
+    //    ZRANGEBYLEX."
     private static ValueTask<RespValue> ZLexCount(CommandContext ctx)
     {
         var key = ctx.GetArgString(0);
@@ -500,6 +504,10 @@ internal sealed class SortedSetCommands : ICommandHandler
         return ValueTask.FromResult<RespValue>(new RespValue.Array(results.ToArray()));
     }
 
+    // Ref: https://redis.io/docs/latest/commands/zrandmember/
+    //   "If count is positive, return an array of distinct elements."
+    //   "If count is negative, the behavior changes and the command is
+    //    allowed to return the same element multiple times."
     private static ValueTask<RespValue> ZRandMember(CommandContext ctx)
     {
         var zset = GetZSet(ctx, ctx.GetArgString(0));
@@ -512,12 +520,25 @@ internal sealed class SortedSetCommands : ICommandHandler
         int count = (int)ctx.GetArgLong(1);
         bool withScores = ctx.Arguments.Length > 2 && ctx.GetArgString(2).Equals("WITHSCORES", StringComparison.OrdinalIgnoreCase);
         var results = new List<RespValue>();
-        var absCount = Math.Abs(count);
-        for (int i = 0; i < absCount; i++)
+
+        if (count >= 0)
         {
-            var m = members[Random.Shared.Next(members.Length)];
-            results.Add(RespValue.FromBulkString(m));
-            if (withScores) results.Add(RespValue.FromBulkString(FormatScore(zset.MemberScores[m])));
+            var shuffled = members.OrderBy(_ => Random.Shared.Next()).Take(Math.Min(count, members.Length)).ToArray();
+            foreach (var m in shuffled)
+            {
+                results.Add(RespValue.FromBulkString(m));
+                if (withScores) results.Add(RespValue.FromBulkString(FormatScore(zset.MemberScores[m])));
+            }
+        }
+        else
+        {
+            var absCount = Math.Abs(count);
+            for (int i = 0; i < absCount; i++)
+            {
+                var m = members[Random.Shared.Next(members.Length)];
+                results.Add(RespValue.FromBulkString(m));
+                if (withScores) results.Add(RespValue.FromBulkString(FormatScore(zset.MemberScores[m])));
+            }
         }
         return ValueTask.FromResult<RespValue>(new RespValue.Array(results.ToArray()));
     }
@@ -1181,6 +1202,11 @@ internal sealed class SortedSetCommands : ICommandHandler
         return (double.Parse(s, NumberStyles.Float, CultureInfo.InvariantCulture), false);
     }
 
+    // Ref: https://redis.io/docs/latest/commands/zlexcount/
+    //   "Valid start and stop must start with ( or [ to specify whether the range
+    //    item is respectively exclusive or inclusive. The special values of + or -
+    //    for start and stop have the special meaning of positively infinite and
+    //    negatively infinite strings."
     private static (string value, bool exclusive, bool isInf) ParseLexBound(string s)
     {
         if (s == "-") return ("", false, true);

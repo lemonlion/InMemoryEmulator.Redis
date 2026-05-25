@@ -13,6 +13,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\InMemoryEmulator.Redis\InMemoryEmulator.Redis.csproj" />
+    <ProjectReference Include="..\..\src\InMemoryEmulator.Redis.LuaScripting\InMemoryEmulator.Redis.LuaScripting.csproj" />
   </ItemGroup>
 
 </Project>

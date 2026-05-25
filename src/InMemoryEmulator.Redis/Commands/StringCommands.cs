@@ -464,12 +464,25 @@ internal sealed class StringCommands : ICommandHandler
         return new string(result);
     }
 
+    // Ref: https://redis.io/docs/latest/commands/incrbyfloat/
+    //   "The value is stored as a string representation of a floating point number ...
+    //    an integer number followed (when needed) by a dot, and a variable number of
+    //    digits representing the decimal part of the number. Trailing zeroes are always removed."
+    //   Redis uses snprintf with "%.*Lg" (long double, 17 significant digits) then strips
+    //   trailing zeros after the decimal point and removes the decimal point if no fractional part remains.
     private static string FormatRedisFloat(double value)
     {
         if (double.IsInfinity(value)) return value > 0 ? "inf" : "-inf";
+
+        // Use G17 for full precision, matching Redis's 17-significant-digit representation
         var s = value.ToString("G17", CultureInfo.InvariantCulture);
-        if (!s.Contains('.') && !s.Contains('E') && !s.Contains('e'))
-            s += ".0"; // Redis always includes decimal point
+
+        // Strip trailing zeros after the decimal point, matching Redis behavior
+        if (s.Contains('.') && !s.Contains('E') && !s.Contains('e'))
+        {
+            s = s.TrimEnd('0').TrimEnd('.');
+        }
+
         return s;
     }
 }

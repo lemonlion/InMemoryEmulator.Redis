@@ -1,3 +1,4 @@
+using InMemoryEmulator.Redis.LuaScripting;
 using StackExchange.Redis;
 
 namespace InMemoryEmulator.Redis.Tests.Infrastructure;
@@ -40,7 +41,9 @@ public sealed class InMemoryTestFixture : IRedisTestFixture
         await _lock.WaitAsync();
         try
         {
-            _result ??= await InMemoryRedis.CreateAsync();
+            // Ref: https://redis.io/docs/latest/commands/eval/
+            //   Real Redis always has Lua scripting available; enable it for parity.
+            _result ??= (await InMemoryRedis.CreateAsync()).UseLuaScripting();
         }
         finally
         {

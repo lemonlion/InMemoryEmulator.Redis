@@ -36,8 +36,11 @@ internal sealed class GeoCommands : ICommandHandler
     private static ValueTask<RespValue> GeoAdd(CommandContext ctx)
     {
         // Ref: https://redis.io/docs/latest/commands/geoadd/
+        //   "XX: Only update elements that already exist. Don't add new elements."
+        //   "NX: Only add new elements. Don't update already existing elements."
+        //   "CH: Modify the return value from the number of new elements added,
+        //    to the total number of elements changed."
         var key = ctx.GetArgString(0);
-        var zset = GetOrCreate(ctx, key);
 
         bool nx = false, xx = false, ch = false;
         int i = 1;
@@ -49,6 +52,12 @@ internal sealed class GeoCommands : ICommandHandler
             else if (opt == "CH") { ch = true; i++; }
             else break;
         }
+
+        // Only create the sorted set if we're not in XX-only mode or it already exists
+        var existingEntry = ctx.Database.GetTyped<RedisSortedSet>(key);
+        if (xx && existingEntry == null)
+            return ValueTask.FromResult(RespValue.Zero);
+        var zset = existingEntry ?? GetOrCreate(ctx, key);
 
         int added = 0, changed = 0;
         while (i + 2 < ctx.Arguments.Length)
@@ -75,7 +84,11 @@ internal sealed class GeoCommands : ICommandHandler
             }
         }
 
-        ctx.Database.IncrementVersion(key);
+        // Clean up empty sorted set created by GetOrCreate if nothing was added
+        if (added == 0 && changed == 0 && existingEntry == null)
+            ctx.Database.RemoveEntry(key);
+        else
+            ctx.Database.IncrementVersion(key);
         return ValueTask.FromResult<RespValue>(new RespValue.Integer(ch ? added + changed : added));
     }
 
@@ -130,6 +143,9 @@ internal sealed class GeoCommands : ICommandHandler
     private static ValueTask<RespValue> GeoPos(CommandContext ctx)
     {
         // Ref: https://redis.io/docs/latest/commands/geopos/
+        //   "Returns an array where each element is either a two-element
+        //    array representing the longitude and latitude, or null for
+        //    a member that doesn't exist."
         var key = ctx.GetArgString(0);
         var zset = ctx.Database.GetTyped<RedisSortedSet>(key);
         var results = new RespValue[ctx.Arguments.Length - 1];

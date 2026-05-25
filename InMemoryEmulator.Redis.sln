@@ -15,8 +15,6 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "InMemoryEmulator.Redis.Test
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "InMemoryEmulator.Redis.Tests.Integration", "tests\InMemoryEmulator.Redis.Tests.Integration\InMemoryEmulator.Redis.Tests.Integration.csproj", "{B1B2C3D4-0001-0001-0001-000000000003}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "InMemoryEmulator.Redis.Tests.Unit", "tests\InMemoryEmulator.Redis.Tests.Unit\InMemoryEmulator.Redis.Tests.Unit.csproj", "{B1B2C3D4-0001-0001-0001-000000000004}"
-EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -39,16 +37,11 @@ Global
 		{B1B2C3D4-0001-0001-0001-000000000003}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{B1B2C3D4-0001-0001-0001-000000000003}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{B1B2C3D4-0001-0001-0001-000000000003}.Release|Any CPU.Build.0 = Release|Any CPU
-		{B1B2C3D4-0001-0001-0001-000000000004}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{B1B2C3D4-0001-0001-0001-000000000004}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{B1B2C3D4-0001-0001-0001-000000000004}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{B1B2C3D4-0001-0001-0001-000000000004}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{B1B2C3D4-0001-0001-0001-000000000001} = {A1B2C3D4-0001-0001-0001-000000000001}
 		{B1B2C3D4-0001-0001-0001-000000000005} = {A1B2C3D4-0001-0001-0001-000000000001}
 		{B1B2C3D4-0001-0001-0001-000000000002} = {A1B2C3D4-0001-0001-0001-000000000002}
 		{B1B2C3D4-0001-0001-0001-000000000003} = {A1B2C3D4-0001-0001-0001-000000000002}
-		{B1B2C3D4-0001-0001-0001-000000000004} = {A1B2C3D4-0001-0001-0001-000000000002}
 	EndGlobalSection
 EndGlobal

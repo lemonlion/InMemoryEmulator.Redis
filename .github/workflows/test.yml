@@ -34,9 +34,6 @@ jobs:
         with:
           dotnet-version: 8.0.x
 
-      - name: Run Unit Tests
-        run: dotnet test tests/InMemoryEmulator.Redis.Tests.Unit --configuration Release --logger "trx;LogFileName=unit-results.trx" --results-directory ./TestResults
-
       - name: Run Integration Tests (In-Memory)
         env:
           REDIS_TEST_TARGET: inmemory

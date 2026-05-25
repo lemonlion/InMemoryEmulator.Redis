@@ -397,11 +397,22 @@ internal sealed class ServerCommands : ICommandHandler
         return ValueTask.FromResult<RespValue>(new RespValue.Error("ERR", $"unknown subcommand '{sub}'"));
     }
 
-    private static ValueTask<RespValue> Debug(CommandContext ctx)
+    // Ref: https://redis.io/docs/latest/commands/debug/
+    //   "DEBUG SLEEP <seconds> — suspends the server for the specified time."
+    private static async ValueTask<RespValue> Debug(CommandContext ctx)
     {
         if (ctx.Arguments.Length > 0 && ctx.GetArgString(0).Equals("SLEEP", StringComparison.OrdinalIgnoreCase))
-            return ValueTask.FromResult(RespValue.Ok);
-        return ValueTask.FromResult(RespValue.Ok);
+        {
+            if (ctx.Arguments.Length > 1)
+            {
+                var seconds = ctx.GetArgDouble(1);
+                var ms = (int)(seconds * 1000);
+                if (ms > 0)
+                    await Task.Delay(ms, ctx.CancellationToken);
+            }
+            return RespValue.Ok;
+        }
+        return RespValue.Ok;
     }
 
     internal static bool MatchesGlob(string input, string pattern)

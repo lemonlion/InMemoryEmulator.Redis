@@ -41,12 +41,12 @@ internal sealed class StreamCommands : ICommandHandler
     {
         // Ref: https://redis.io/docs/latest/commands/xadd/
         var key = ctx.GetArgString(0);
-        var stream = GetOrCreate(ctx, key);
 
         int i = 1;
         int maxLen = -1;
+        bool noMkStream = false;
 
-        // Parse options
+        // Parse options before the stream ID
         while (i < ctx.Arguments.Length)
         {
             var opt = ctx.GetArgString(i).ToUpperInvariant();
@@ -57,9 +57,25 @@ internal sealed class StreamCommands : ICommandHandler
                 maxLen = (int)long.Parse(ctx.GetArgString(i));
                 i++;
             }
-            else if (opt == "NOMKSTREAM") { i++; }
+            else if (opt == "NOMKSTREAM")
+            {
+                // Ref: https://redis.io/docs/latest/commands/xadd/
+                //   "NOMKSTREAM -- Don't create the stream if it doesn't exist."
+                noMkStream = true;
+                i++;
+            }
             else break;
         }
+
+        // If NOMKSTREAM is set and the key doesn't exist, return nil
+        // Ref: https://redis.io/docs/latest/commands/xadd/
+        //   When NOMKSTREAM is specified and the key does not exist, the command returns a Null reply.
+        if (noMkStream && ctx.Database.GetEntry(key) == null)
+        {
+            return ValueTask.FromResult(RespValue.NullBulkString);
+        }
+
+        var stream = GetOrCreate(ctx, key);
 
         var idStr = ctx.GetArgString(i);
         i++;
