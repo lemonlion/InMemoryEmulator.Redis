@@ -218,9 +218,9 @@ public class HashGetDelExTests : IAsyncLifetime
     public async Task HSetEx_sets_fields_with_expiry_in_seconds()
     {
         // Ref: https://redis.io/docs/latest/commands/hsetex/
-        //   Syntax: HSETEX key <EX seconds|...> FIELDS numfields field value [field value ...]
+        //   Returns 0 if no fields were set, 1 if all the fields were set.
         var result = await _db.ExecuteAsync("HSETEX", "hse_ex", "EX", "60", "FIELDS", "2", "f1", "v1", "f2", "v2");
-        Assert.Equal(2, (long)result);
+        Assert.Equal(1, (long)result);
 
         Assert.Equal("v1", (await _db.HashGetAsync("hse_ex", "f1")).ToString());
         Assert.Equal("v2", (await _db.HashGetAsync("hse_ex", "f2")).ToString());
@@ -258,7 +258,7 @@ public class HashGetDelExTests : IAsyncLifetime
         //   KEEPTTL retains the existing per-field TTL when overwriting.
         await _db.ExecuteAsync("HSETEX", "hse_kt", "EX", "60", "FIELDS", "1", "f1", "v1");
         var result = await _db.ExecuteAsync("HSETEX", "hse_kt", "KEEPTTL", "FIELDS", "1", "f1", "v2");
-        Assert.Equal(0, (long)result);
+        Assert.Equal(1, (long)result);
 
         Assert.Equal("v2", (await _db.HashGetAsync("hse_kt", "f1")).ToString());
 
@@ -268,12 +268,41 @@ public class HashGetDelExTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task HSetEx_returns_count_of_new_fields()
+    public async Task HSetEx_returns_one_on_success()
     {
+        // Ref: https://redis.io/docs/latest/commands/hsetex/
+        //   Returns 0 if no fields were set, 1 if all the fields were set.
         await _db.HashSetAsync("hse_count", "f1", "old");
 
-        // f1 = update, f2 = new
         var result = await _db.ExecuteAsync("HSETEX", "hse_count", "EX", "60", "FIELDS", "2", "f1", "new_val", "f2", "v2");
-        Assert.Equal(1, (long)result); // Only f2 is new
+        Assert.Equal(1, (long)result);
+    }
+
+    [Fact]
+    public async Task HSetEx_FNX_only_sets_new_fields()
+    {
+        // Ref: https://redis.io/docs/latest/commands/hsetex/
+        //   FNX: Only set new fields (skip existing fields).
+        await _db.HashSetAsync("hse_fnx", "f1", "old");
+
+        var result = await _db.ExecuteAsync("HSETEX", "hse_fnx", "FNX", "EX", "60", "FIELDS", "2", "f1", "new_val", "f2", "v2");
+        Assert.Equal(1, (long)result);
+
+        Assert.Equal("old", (await _db.HashGetAsync("hse_fnx", "f1")).ToString());
+        Assert.Equal("v2", (await _db.HashGetAsync("hse_fnx", "f2")).ToString());
+    }
+
+    [Fact]
+    public async Task HSetEx_FXX_only_sets_existing_fields()
+    {
+        // Ref: https://redis.io/docs/latest/commands/hsetex/
+        //   FXX: Only set existing fields (skip new fields).
+        await _db.HashSetAsync("hse_fxx", "f1", "old");
+
+        var result = await _db.ExecuteAsync("HSETEX", "hse_fxx", "FXX", "EX", "60", "FIELDS", "2", "f1", "new_val", "f2", "v2");
+        Assert.Equal(1, (long)result);
+
+        Assert.Equal("new_val", (await _db.HashGetAsync("hse_fxx", "f1")).ToString());
+        Assert.True((await _db.HashGetAsync("hse_fxx", "f2")).IsNull);
     }
 }

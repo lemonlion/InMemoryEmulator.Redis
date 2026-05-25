@@ -804,9 +804,10 @@ internal sealed class HashCommands : ICommandHandler
     }
 
     // Ref: https://redis.io/docs/latest/commands/hsetex/
-    //   "Set the value and the expiration of one or more fields."
-    //   Syntax: HSETEX key <EX seconds | PX milliseconds | EXAT unix-time-seconds | PXAT unix-time-milliseconds | KEEPTTL> FIELDS numfields field value [field value ...]
-    //   Expiry option is mandatory. Returns the number of new fields added (same as HSET).
+    //   "Set the value of one or more fields of a given hash key, and optionally set their expiration."
+    //   Syntax: HSETEX key [FNX | FXX] [EX seconds | PX milliseconds | EXAT unix-time-seconds |
+    //           PXAT unix-time-milliseconds | KEEPTTL] FIELDS numfields field value [field value ...]
+    //   Returns: 0 if no fields were set, 1 if all the fields were set.
     private static ValueTask<RespValue> HSetEx(CommandContext ctx)
     {
         var key = ctx.GetArgString(0);
@@ -815,69 +816,87 @@ internal sealed class HashCommands : ICommandHandler
             return ValueTask.FromResult<RespValue>(new RespValue.Error("ERR",
                 "wrong number of arguments for 'hsetex' command"));
 
-        // Parse the expiry option (mandatory)
         DateTimeOffset? expiry = null;
         bool keepTtl = false;
-        int fieldsKeywordIndex;
+        bool fnx = false; // Only set new fields
+        bool fxx = false; // Only set existing fields
+        int idx = 1;
 
-        var opt = ctx.GetArgString(1).ToUpperInvariant();
-        switch (opt)
+        // Parse optional FNX/FXX flags and expiry options before FIELDS keyword
+        while (idx < ctx.Arguments.Length)
         {
-            case "EX":
-                expiry = DateTimeOffset.UtcNow.AddSeconds(ctx.GetArgLong(2));
-                fieldsKeywordIndex = 3;
-                break;
-            case "PX":
-                expiry = DateTimeOffset.UtcNow.AddMilliseconds(ctx.GetArgLong(2));
-                fieldsKeywordIndex = 3;
-                break;
-            case "EXAT":
-                expiry = DateTimeOffset.FromUnixTimeSeconds(ctx.GetArgLong(2));
-                fieldsKeywordIndex = 3;
-                break;
-            case "PXAT":
-                expiry = DateTimeOffset.FromUnixTimeMilliseconds(ctx.GetArgLong(2));
-                fieldsKeywordIndex = 3;
-                break;
-            case "KEEPTTL":
-                keepTtl = true;
-                fieldsKeywordIndex = 2;
-                break;
-            default:
-                return ValueTask.FromResult<RespValue>(new RespValue.Error("ERR",
-                    $"unknown argument: {ctx.GetArgString(1)}"));
+            var opt = ctx.GetArgString(idx).ToUpperInvariant();
+            if (opt == "FIELDS") break;
+            switch (opt)
+            {
+                case "FNX":
+                    fnx = true;
+                    idx++;
+                    break;
+                case "FXX":
+                    fxx = true;
+                    idx++;
+                    break;
+                case "EX":
+                    expiry = DateTimeOffset.UtcNow.AddSeconds(ctx.GetArgLong(idx + 1));
+                    idx += 2;
+                    break;
+                case "PX":
+                    expiry = DateTimeOffset.UtcNow.AddMilliseconds(ctx.GetArgLong(idx + 1));
+                    idx += 2;
+                    break;
+                case "EXAT":
+                    expiry = DateTimeOffset.FromUnixTimeSeconds(ctx.GetArgLong(idx + 1));
+                    idx += 2;
+                    break;
+                case "PXAT":
+                    expiry = DateTimeOffset.FromUnixTimeMilliseconds(ctx.GetArgLong(idx + 1));
+                    idx += 2;
+                    break;
+                case "KEEPTTL":
+                    keepTtl = true;
+                    idx++;
+                    break;
+                default:
+                    return ValueTask.FromResult<RespValue>(new RespValue.Error("ERR",
+                        $"unknown argument: {ctx.GetArgString(idx)}"));
+            }
         }
 
         // Require FIELDS keyword
-        if (fieldsKeywordIndex >= ctx.Arguments.Length ||
-            !ctx.GetArgString(fieldsKeywordIndex).Equals("FIELDS", StringComparison.OrdinalIgnoreCase))
+        if (idx >= ctx.Arguments.Length ||
+            !ctx.GetArgString(idx).Equals("FIELDS", StringComparison.OrdinalIgnoreCase))
             return ValueTask.FromResult<RespValue>(new RespValue.Error("ERR",
-                $"unknown argument: {(fieldsKeywordIndex < ctx.Arguments.Length ? ctx.GetArgString(fieldsKeywordIndex) : "")}"));
+                $"unknown argument: {(idx < ctx.Arguments.Length ? ctx.GetArgString(idx) : "")}"));
 
-        var numFields = (int)ctx.GetArgLong(fieldsKeywordIndex + 1);
+        var numFields = (int)ctx.GetArgLong(idx + 1);
+        int fieldsStart = idx + 2;
+
         var hash = GetOrCreateHash(ctx, key);
+        bool anySet = false;
 
-        int fieldsStart = fieldsKeywordIndex + 2;
-        int count = 0;
         for (int i = 0; i < numFields; i++)
         {
             var field = ctx.GetArgString(fieldsStart + i * 2);
             var value = ctx.GetArgBytes(fieldsStart + i * 2 + 1) ?? Array.Empty<byte>();
+            bool exists = hash.FieldExists(field);
 
-            if (!hash.FieldExists(field)) count++;
+            // FNX: skip existing fields; FXX: skip new fields
+            if (fnx && exists) continue;
+            if (fxx && !exists) continue;
+
             hash.Fields[field] = value;
+            anySet = true;
 
             if (expiry.HasValue)
-            {
                 hash.FieldExpiry[field] = expiry.Value;
-            }
             else if (!keepTtl)
-            {
                 hash.FieldExpiry.Remove(field);
-            }
         }
 
         ctx.Database.IncrementVersion(key);
-        return ValueTask.FromResult<RespValue>(new RespValue.Integer(count));
+        // Ref: https://redis.io/docs/latest/commands/hsetex/
+        //   Returns 0 if no fields were set, 1 if all the fields were set.
+        return ValueTask.FromResult<RespValue>(new RespValue.Integer(anySet ? 1 : 0));
     }
 }
