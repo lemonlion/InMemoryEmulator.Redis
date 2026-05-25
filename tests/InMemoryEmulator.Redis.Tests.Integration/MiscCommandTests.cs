@@ -141,29 +141,13 @@ public class MiscCommandTests : IAsyncLifetime
     }
 
     [Fact]
-    [Trait(TestTraits.Target, TestTraits.InMemoryOnly)]
-    public async Task SPUBLISH_delivers_message_to_subscriber()
+    public async Task SPUBLISH_returns_zero_in_standalone_mode()
     {
         // Ref: https://redis.io/docs/latest/commands/spublish/
-        //   SPUBLISH delivers to SSUBSCRIBE clients only. SSUBSCRIBE requires cluster mode.
-        //   In standalone Redis, SPUBLISH returns 0 and doesn't deliver to regular subscribers.
-        //   This test validates the emulator's simplified behavior (routes to regular subs).
-        var mux = await _fixture.GetMultiplexerAsync();
-        var sub = mux.GetSubscriber();
-        var tcs = new TaskCompletionSource<string>();
-
-        await sub.SubscribeAsync(RedisChannel.Literal("spub_test"), (channel, message) =>
-        {
-            tcs.TrySetResult(message!);
-        });
-
-        await Task.Delay(100); // Let subscription settle
-        await _db.ExecuteAsync("SPUBLISH", "spub_test", "hello_shard");
-
-        var received = await tcs.Task.WaitAsync(TimeSpan.FromSeconds(3));
-        Assert.Equal("hello_shard", received);
-
-        await sub.UnsubscribeAsync(RedisChannel.Literal("spub_test"));
+        //   In standalone mode, SPUBLISH always returns 0 because sharded pub/sub
+        //   only works in cluster mode.
+        var result = await _db.ExecuteAsync("SPUBLISH", "spub_test", "hello_shard");
+        Assert.Equal(0, (long)result);
     }
 
     // ═══════════════════════════════════════════════════════════════

@@ -178,13 +178,10 @@ internal sealed class PubSubCommands : ICommandHandler
 
     // Ref: https://redis.io/docs/latest/commands/spublish/
     //   "Posts a message to the given shard channel."
-    //   In standalone mode, SPUBLISH routes through regular PUBLISH.
+    //   In standalone mode, SPUBLISH always returns 0 — sharded pub/sub only works in cluster mode.
     private ValueTask<RespValue> SPublish(CommandContext ctx)
     {
-        var channel = ctx.GetArgString(0);
-        var message = ctx.GetArgBytes(1) ?? Array.Empty<byte>();
-        var count = _broker.Publish(channel, message);
-        return ValueTask.FromResult<RespValue>(new RespValue.Integer(count));
+        return ValueTask.FromResult(RespValue.Zero);
     }
 
     private ValueTask<RespValue> SUnsubscribe(CommandContext ctx)
