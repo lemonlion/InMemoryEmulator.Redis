@@ -213,6 +213,25 @@ internal sealed class ServerCommands : ICommandHandler
             case "LIST":
                 var list = $"id={ctx.Client.Id} name={ctx.Client.ClientName ?? ""}\n";
                 return ValueTask.FromResult<RespValue>(new RespValue.BulkString(Encoding.UTF8.GetBytes(list)));
+            case "SETINFO":
+                // Ref: https://redis.io/docs/latest/commands/client-setinfo/
+                //   "Set client or connection specific info, currently lib-name and lib-ver."
+                if (ctx.Arguments.Length < 3)
+                    return ValueTask.FromResult<RespValue>(new RespValue.Error("ERR", "wrong number of arguments for 'client|setinfo' command"));
+                var attr = ctx.GetArgString(1).ToLowerInvariant();
+                var attrValue = ctx.GetArgString(2);
+                switch (attr)
+                {
+                    case "lib-name":
+                        ctx.Client.LibraryName = attrValue;
+                        break;
+                    case "lib-ver":
+                        ctx.Client.LibraryVersion = attrValue;
+                        break;
+                    default:
+                        return ValueTask.FromResult<RespValue>(new RespValue.Error("ERR", $"Unrecognized option '{attr}'"));
+                }
+                return ValueTask.FromResult(RespValue.Ok);
             case "NO-EVICT":
             case "NO-TOUCH":
                 return ValueTask.FromResult(RespValue.Ok);
@@ -308,9 +327,20 @@ internal sealed class ServerCommands : ICommandHandler
         return ValueTask.FromResult(RespValue.Ok);
     }
 
-    private static ValueTask<RespValue> SwapDb(CommandContext ctx)
+    // Ref: https://redis.io/docs/latest/commands/swapdb/
+    //   "Swaps two Redis databases, so that immediately all the clients connected to a given database
+    //    will see the data of the other database, and the other way around."
+    private ValueTask<RespValue> SwapDb(CommandContext ctx)
     {
-        return ValueTask.FromResult<RespValue>(new RespValue.Error("ERR", "SWAPDB is not supported in the emulator"));
+        if (ctx.Arguments.Length < 2)
+            return ValueTask.FromResult<RespValue>(new RespValue.Error("ERR", "wrong number of arguments for 'swapdb' command"));
+        var index1 = (int)ctx.GetArgLong(0);
+        var index2 = (int)ctx.GetArgLong(1);
+        if (index1 < 0 || index1 >= InMemoryRedisStore.DatabaseCount ||
+            index2 < 0 || index2 >= InMemoryRedisStore.DatabaseCount)
+            return ValueTask.FromResult<RespValue>(new RespValue.Error("ERR", "invalid DB index"));
+        _store.SwapDatabases(index1, index2);
+        return ValueTask.FromResult(RespValue.Ok);
     }
 
     private static ValueTask<RespValue> Reset(CommandContext ctx)

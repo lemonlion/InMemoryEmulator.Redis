@@ -12,6 +12,8 @@ internal sealed class ClientConnection : IAsyncDisposable
     public int Id { get; }
     public int SelectedDatabase { get; set; }
     public string? ClientName { get; set; }
+    public string? LibraryName { get; set; }
+    public string? LibraryVersion { get; set; }
     public bool Authenticated { get; set; }
 
     public bool InTransaction { get; set; }

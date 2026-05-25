@@ -22,6 +22,7 @@ internal sealed class PubSubCommands : ICommandHandler
             "PUBSUB" => PubSub(context),
             "SSUBSCRIBE" => SSubscribe(context),
             "SUNSUBSCRIBE" => SUnsubscribe(context),
+            "SPUBLISH" => SPublish(context),
             _ => ValueTask.FromResult<RespValue>(new RespValue.Error("ERR", $"unknown command '{context.CommandName}'"))
         };
     }
@@ -173,6 +174,17 @@ internal sealed class PubSubCommands : ICommandHandler
             RespValue.FromBulkString(lastChannel),
             new RespValue.Integer(total)
         }));
+    }
+
+    // Ref: https://redis.io/docs/latest/commands/spublish/
+    //   "Posts a message to the given shard channel."
+    //   In standalone mode, SPUBLISH routes through regular PUBLISH.
+    private ValueTask<RespValue> SPublish(CommandContext ctx)
+    {
+        var channel = ctx.GetArgString(0);
+        var message = ctx.GetArgBytes(1) ?? Array.Empty<byte>();
+        var count = _broker.Publish(channel, message);
+        return ValueTask.FromResult<RespValue>(new RespValue.Integer(count));
     }
 
     private ValueTask<RespValue> SUnsubscribe(CommandContext ctx)

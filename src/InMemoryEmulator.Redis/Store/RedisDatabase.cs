@@ -70,8 +70,17 @@ internal sealed class RedisDatabase : IDisposable
         IncrementVersion(key);
     }
 
+    // Ref: https://redis.io/docs/latest/commands/del/
+    //   "Returns the number of keys that were removed."
+    //   Expired keys are treated as non-existent.
     public bool RemoveEntry(string key)
     {
+        if (!_entries.TryGetValue(key, out var entry)) return false;
+        if (entry.IsExpired)
+        {
+            _entries.TryRemove(key, out _);
+            return false;
+        }
         var removed = _entries.TryRemove(key, out _);
         if (removed) IncrementVersion(key);
         return removed;

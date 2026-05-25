@@ -71,6 +71,11 @@ internal sealed class ScriptingCommands : ICommandHandler
             case "FLUSH":
                 _scriptCache.Flush();
                 return ValueTask.FromResult(RespValue.Ok);
+            case "KILL":
+                // Ref: https://redis.io/docs/latest/commands/script-kill/
+                //   "Kills the currently executing Lua script."
+                //   In emulator, scripts run synchronously so this is a no-op.
+                return ValueTask.FromResult(RespValue.Ok);
             default:
                 return ValueTask.FromResult<RespValue>(new RespValue.Error("ERR", $"unknown script subcommand '{sub}'"));
         }

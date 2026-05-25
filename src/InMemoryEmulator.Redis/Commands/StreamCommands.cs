@@ -24,6 +24,7 @@ internal sealed class StreamCommands : ICommandHandler
             "XPENDING" => XPending(context),
             "XCLAIM" => XClaim(context),
             "XAUTOCLAIM" => XAutoClaim(context),
+            "XSETID" => XSetId(context),
             _ => ValueTask.FromResult<RespValue>(new RespValue.Error("ERR", $"unknown command '{context.CommandName}'"))
         };
     }
@@ -305,6 +306,36 @@ internal sealed class StreamCommands : ICommandHandler
             })).ToArray();
             return ValueTask.FromResult<RespValue>(new RespValue.Array(groups));
         }
+        // Ref: https://redis.io/docs/latest/commands/xinfo-consumers/
+        //   "Returns a list of consumers in the consumer group."
+        //   Each consumer: name, pending, idle, inactive (as flat key-value pairs)
+        if (sub == "CONSUMERS")
+        {
+            var key = ctx.GetArgString(1);
+            var groupName = ctx.GetArgString(2);
+            var stream = ctx.Database.GetTyped<RedisStream>(key);
+            if (stream == null)
+                return ValueTask.FromResult<RespValue>(new RespValue.Error("ERR", "no such key"));
+            if (!stream.ConsumerGroups.TryGetValue(groupName, out var group))
+                return ValueTask.FromResult<RespValue>(new RespValue.Error("NOGROUP",
+                    $"No such consumer group '{groupName}' for key name '{key}'"));
+
+            var now = DateTimeOffset.UtcNow;
+            var consumers = group.Consumers.Values.Select(c =>
+            {
+                var idleMs = (long)(now - c.LastSeen).TotalMilliseconds;
+                // Count actual pending entries for this consumer from the PEL
+                var pending = group.PendingEntries.Values.Count(pe => pe.ConsumerName == c.Name);
+                return new RespValue.Array(new RespValue[]
+                {
+                    RespValue.FromBulkString("name"), RespValue.FromBulkString(c.Name),
+                    RespValue.FromBulkString("pending"), new RespValue.Integer(pending),
+                    RespValue.FromBulkString("idle"), new RespValue.Integer(idleMs),
+                    RespValue.FromBulkString("inactive"), new RespValue.Integer(idleMs),
+                });
+            }).ToArray();
+            return ValueTask.FromResult<RespValue>(new RespValue.Array(consumers));
+        }
         return ValueTask.FromResult(RespValue.EmptyArray);
     }
 
@@ -355,6 +386,55 @@ internal sealed class StreamCommands : ICommandHandler
                 return ValueTask.FromResult<RespValue>(new RespValue.Error("NOGROUP", "No such consumer group"));
             group.LastDeliveredId = id;
             return ValueTask.FromResult(RespValue.Ok);
+        }
+        // Ref: https://redis.io/docs/latest/commands/xgroup-createconsumer/
+        //   "Create a consumer named <consumername> in the consumer group <groupname>"
+        //   "Returns 1 if the consumer was created, 0 if already existed"
+        if (sub == "CREATECONSUMER")
+        {
+            var key = ctx.GetArgString(1);
+            var groupName = ctx.GetArgString(2);
+            var consumerName = ctx.GetArgString(3);
+            var stream = ctx.Database.GetTyped<RedisStream>(key);
+            if (stream == null || !stream.ConsumerGroups.TryGetValue(groupName, out var group))
+                return ValueTask.FromResult<RespValue>(new RespValue.Error("NOGROUP",
+                    $"No such consumer group '{groupName}' for key name '{key}'"));
+
+            if (group.Consumers.ContainsKey(consumerName))
+                return ValueTask.FromResult(RespValue.Zero);
+
+            group.Consumers[consumerName] = new ConsumerInfo { Name = consumerName };
+            return ValueTask.FromResult(RespValue.One);
+        }
+        // Ref: https://redis.io/docs/latest/commands/xgroup-delconsumer/
+        //   "Delete a consumer named <consumername> in the consumer group <groupname>"
+        //   "Returns the number of pending entries that the consumer had before it was deleted"
+        if (sub == "DELCONSUMER")
+        {
+            var key = ctx.GetArgString(1);
+            var groupName = ctx.GetArgString(2);
+            var consumerName = ctx.GetArgString(3);
+            var stream = ctx.Database.GetTyped<RedisStream>(key);
+            if (stream == null || !stream.ConsumerGroups.TryGetValue(groupName, out var group))
+                return ValueTask.FromResult<RespValue>(new RespValue.Error("NOGROUP",
+                    $"No such consumer group '{groupName}' for key name '{key}'"));
+
+            // Count pending entries for this consumer
+            long pendingCount = group.PendingEntries.Values
+                .Count(pe => pe.ConsumerName == consumerName);
+
+            // Remove all pending entries for this consumer
+            var idsToRemove = group.PendingEntries
+                .Where(kv => kv.Value.ConsumerName == consumerName)
+                .Select(kv => kv.Key)
+                .ToList();
+            foreach (var id in idsToRemove)
+                group.PendingEntries.Remove(id);
+
+            // Remove the consumer
+            group.Consumers.Remove(consumerName);
+
+            return ValueTask.FromResult<RespValue>(new RespValue.Integer(pendingCount));
         }
         return ValueTask.FromResult(RespValue.Ok);
     }
@@ -491,8 +571,49 @@ internal sealed class StreamCommands : ICommandHandler
             }));
         }
 
-        // Extended form with range
-        return ValueTask.FromResult(RespValue.EmptyArray);
+        // Ref: https://redis.io/docs/latest/commands/xpending/
+        //   Extended form: XPENDING key group [[IDLE min-idle-time] start end count [consumer]]
+        //   Returns array of [id, consumer-name, idle-time-ms, delivery-count] entries
+        int argIdx = 2;
+        long minIdleMs = 0;
+        if (ctx.GetArgString(argIdx).Equals("IDLE", StringComparison.OrdinalIgnoreCase))
+        {
+            argIdx++;
+            minIdleMs = long.Parse(ctx.GetArgString(argIdx));
+            argIdx++;
+        }
+
+        var start = ctx.GetArgString(argIdx);
+        argIdx++;
+        var end = ctx.GetArgString(argIdx);
+        argIdx++;
+        var countArg = (int)long.Parse(ctx.GetArgString(argIdx));
+        argIdx++;
+
+        string? filterConsumer = null;
+        if (argIdx < ctx.Arguments.Length)
+        {
+            filterConsumer = ctx.GetArgString(argIdx);
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        var filtered = group.PendingEntries.Values
+            .Where(pe => start == "-" || RedisStream.CompareIds(pe.EntryId, start) >= 0)
+            .Where(pe => end == "+" || RedisStream.CompareIds(pe.EntryId, end) <= 0)
+            .Where(pe => filterConsumer == null || pe.ConsumerName == filterConsumer)
+            .Where(pe => minIdleMs == 0 || (now - pe.DeliveredAt).TotalMilliseconds >= minIdleMs)
+            .OrderBy(pe => pe.EntryId, StringComparer.Ordinal)
+            .Take(countArg)
+            .Select(pe => new RespValue.Array(new RespValue[]
+            {
+                RespValue.FromBulkString(pe.EntryId),
+                RespValue.FromBulkString(pe.ConsumerName),
+                new RespValue.Integer((long)(now - pe.DeliveredAt).TotalMilliseconds),
+                new RespValue.Integer(pe.DeliveryCount)
+            }))
+            .ToArray();
+
+        return ValueTask.FromResult<RespValue>(new RespValue.Array(filtered));
     }
 
     // Ref: https://redis.io/docs/latest/commands/xclaim/
@@ -608,6 +729,39 @@ internal sealed class StreamCommands : ICommandHandler
             new RespValue.Array(claimed.ToArray()),
             new RespValue.Array(deletedIds.ToArray())
         }));
+    }
+
+    // Ref: https://redis.io/docs/latest/commands/xsetid/
+    //   "XSETID is used to set the last ID of a stream without adding entries to it."
+    //   "Normally the last ID of the stream is updated only when XADD is called."
+    //   "Returns OK if the command was executed successfully."
+    //   "The command only sets the last ID if it is greater than the current one."
+    private static ValueTask<RespValue> XSetId(CommandContext ctx)
+    {
+        var key = ctx.GetArgString(0);
+        var newId = ctx.GetArgString(1);
+
+        var stream = ctx.Database.GetTyped<RedisStream>(key);
+        if (stream == null)
+            return ValueTask.FromResult<RespValue>(new RespValue.Error("ERR", "The XSETID subcommand requires the key to exist."));
+
+        // Parse the new ID
+        var parts = newId.Split('-');
+        var newTs = long.Parse(parts[0]);
+        var newSeq = parts.Length > 1 ? long.Parse(parts[1]) : 0L;
+
+        // Only update if the new ID is greater than current
+        var currentId = $"{stream.LastTimestamp}-{stream.LastSequence}";
+        if (RedisStream.CompareIds(newId, currentId) > 0)
+        {
+            stream.LastTimestamp = newTs;
+            stream.LastSequence = newSeq;
+        }
+
+        // Parse optional ENTRIESADDED — accepted but ignored in the emulator
+        // (Redis uses it for internal bookkeeping)
+
+        return ValueTask.FromResult(RespValue.Ok);
     }
 
     private static RespValue FormatStreamEntry(StreamEntry entry)

@@ -22,6 +22,18 @@ public sealed class InMemoryRedisStore
         return _databases[index];
     }
 
+    // Ref: https://redis.io/docs/latest/commands/swapdb/
+    //   "Swaps two Redis databases, so that immediately all the clients connected to a given database
+    //    will see the data of the other database, and the other way around."
+    internal void SwapDatabases(int index1, int index2)
+    {
+        if (index1 < 0 || index1 >= DatabaseCount)
+            throw new ArgumentOutOfRangeException(nameof(index1));
+        if (index2 < 0 || index2 >= DatabaseCount)
+            throw new ArgumentOutOfRangeException(nameof(index2));
+        (_databases[index1], _databases[index2]) = (_databases[index2], _databases[index1]);
+    }
+
     public void FlushAll()
     {
         for (int i = 0; i < DatabaseCount; i++)

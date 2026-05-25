@@ -40,6 +40,7 @@ internal sealed class KeyCommands : ICommandHandler
             "SORT" => Sort(context),
             "SORT_RO" => Sort(context),
             "WAIT" => Wait(context),
+            "MOVE" => Move(context),
             _ => ValueTask.FromResult<RespValue>(new RespValue.Error("ERR", $"unknown command '{context.CommandName}'"))
         };
     }
@@ -452,7 +453,12 @@ internal sealed class KeyCommands : ICommandHandler
     }
 
     // Ref: https://redis.io/docs/latest/commands/sort/
-    private static ValueTask<RespValue> Sort(CommandContext ctx)
+    // Ref: https://redis.io/docs/latest/commands/sort/
+    //   "BY pattern: sort by external key values via pattern substitution (* → element)"
+    //   "GET pattern: retrieve external values; GET # returns the element itself"
+    //   "Multiple GET patterns produce multiple values per element in the result"
+    //   "BY nosort: skip sorting, just retrieve GET patterns in natural order"
+    private ValueTask<RespValue> Sort(CommandContext ctx)
     {
         var key = ctx.GetArgString(0);
         var entry = ctx.Database.GetEntry(key);
@@ -471,6 +477,8 @@ internal sealed class KeyCommands : ICommandHandler
         bool alpha = false, desc = false;
         int offset = 0, count = int.MaxValue;
         string? storeKey = null;
+        string? byPattern = null;
+        var getPatterns = new List<string>();
 
         for (int i = 1; i < ctx.Arguments.Length; i++)
         {
@@ -485,16 +493,64 @@ internal sealed class KeyCommands : ICommandHandler
                     i++; count = (int)ctx.GetArgLong(i);
                     break;
                 case "STORE": i++; storeKey = ctx.GetArgString(i); break;
-                case "BY": i++; break; // skip BY pattern (simplified)
-                case "GET": i++; break; // skip GET pattern (simplified)
+                case "BY": i++; byPattern = ctx.GetArgString(i); break;
+                case "GET": i++; getPatterns.Add(ctx.GetArgString(i)); break;
             }
         }
 
-        var sorted = alpha
-            ? (desc ? elements.OrderByDescending(e => e, StringComparer.Ordinal) : elements.OrderBy(e => e, StringComparer.Ordinal))
-            : (desc ? elements.OrderByDescending(e => double.TryParse(e, out var d) ? d : 0) : elements.OrderBy(e => double.TryParse(e, out var d) ? d : 0));
+        var elementList = elements.ToList();
+
+        // Ref: https://redis.io/docs/latest/commands/sort/
+        //   "When BY is specified with a nosort pattern, SORT skips the sorting operation."
+        bool noSort = byPattern != null &&
+                      byPattern.Equals("nosort", StringComparison.OrdinalIgnoreCase);
+
+        IEnumerable<string> sorted;
+        if (noSort)
+        {
+            sorted = elementList;
+        }
+        else if (byPattern != null)
+        {
+            sorted = SortByPattern(elementList, byPattern, ctx.Database, alpha, desc);
+        }
+        else
+        {
+            sorted = alpha
+                ? (desc ? elementList.OrderByDescending(e => e, StringComparer.Ordinal) : elementList.OrderBy(e => e, StringComparer.Ordinal))
+                : (desc ? elementList.OrderByDescending(e => double.TryParse(e, out var d) ? d : 0) : elementList.OrderBy(e => double.TryParse(e, out var d) ? d : 0));
+        }
 
         var result = sorted.Skip(offset).Take(count).ToList();
+
+        if (getPatterns.Count > 0)
+        {
+            var output = new List<RespValue>();
+            foreach (var elem in result)
+            {
+                foreach (var pattern in getPatterns)
+                {
+                    output.Add(ResolveGetPattern(elem, pattern, ctx.Database));
+                }
+            }
+
+            if (storeKey != null)
+            {
+                var list = new RedisList();
+                foreach (var v in output)
+                {
+                    if (v is RespValue.BulkString { Data: { } data })
+                        list.Items.AddLast(data);
+                    else
+                        list.Items.AddLast(Array.Empty<byte>());
+                }
+                if (list.Items.Count > 0) ctx.Database.SetEntry(storeKey, list);
+                else ctx.Database.RemoveEntry(storeKey);
+                return ValueTask.FromResult<RespValue>(new RespValue.Integer(output.Count));
+            }
+
+            return ValueTask.FromResult<RespValue>(new RespValue.Array(output.ToArray()));
+        }
 
         if (storeKey != null)
         {
@@ -507,6 +563,89 @@ internal sealed class KeyCommands : ICommandHandler
 
         var respResult = result.Select(e => (RespValue)RespValue.FromBulkString(e)).ToArray();
         return ValueTask.FromResult<RespValue>(new RespValue.Array(respResult));
+    }
+
+    // Ref: https://redis.io/docs/latest/commands/sort/
+    //   "BY weight_*: Replace first * in pattern with element value to form a key.
+    //    If key is hash->field (pattern contains ->), look up hash field."
+    private IEnumerable<string> SortByPattern(List<string> elements, string pattern,
+        RedisDatabase db, bool alpha, bool desc)
+    {
+        double LookupSortKey(string elem)
+        {
+            var resolved = ResolvePattern(elem, pattern, db);
+            if (resolved == null) return 0;
+            return double.TryParse(resolved, out var d) ? d : 0;
+        }
+
+        string LookupSortKeyAlpha(string elem)
+        {
+            return ResolvePattern(elem, pattern, db) ?? "";
+        }
+
+        if (alpha)
+            return desc
+                ? elements.OrderByDescending(LookupSortKeyAlpha, StringComparer.Ordinal)
+                : elements.OrderBy(LookupSortKeyAlpha, StringComparer.Ordinal);
+
+        return desc
+            ? elements.OrderByDescending(LookupSortKey)
+            : elements.OrderBy(LookupSortKey);
+    }
+
+    private static string? ResolvePattern(string element, string pattern, RedisDatabase db)
+    {
+        var hashSep = pattern.IndexOf("->", StringComparison.Ordinal);
+        if (hashSep >= 0)
+        {
+            var keyPattern = pattern[..hashSep];
+            var field = pattern[(hashSep + 2)..];
+            var resolvedKey = keyPattern.Replace("*", element);
+            var hash = db.GetTyped<RedisHash>(resolvedKey);
+            if (hash == null || !hash.Fields.TryGetValue(field, out var val)) return null;
+            return Encoding.UTF8.GetString(val);
+        }
+
+        var resolved = pattern.Replace("*", element);
+        var entry = db.GetTyped<RedisString>(resolved);
+        return entry == null ? null : Encoding.UTF8.GetString(entry.Value);
+    }
+
+    // Ref: https://redis.io/docs/latest/commands/sort/
+    //   "GET #: returns the element itself"
+    //   "GET pattern: same substitution as BY, returns the looked-up value or nil"
+    private static RespValue ResolveGetPattern(string element, string pattern, RedisDatabase db)
+    {
+        if (pattern == "#")
+            return RespValue.FromBulkString(element);
+
+        var value = ResolvePattern(element, pattern, db);
+        return value != null ? RespValue.FromBulkString(value) : RespValue.NullBulkString;
+    }
+
+    // Ref: https://redis.io/docs/latest/commands/move/
+    //   "Move key from the currently selected database to the specified destination database."
+    //   Returns 1 if key was moved, 0 if key doesn't exist or target already has the key.
+    private ValueTask<RespValue> Move(CommandContext ctx)
+    {
+        var key = ctx.GetArgString(0);
+        var targetDbIndex = (int)ctx.GetArgLong(1);
+        if (targetDbIndex < 0 || targetDbIndex >= InMemoryRedisStore.DatabaseCount)
+            return ValueTask.FromResult<RespValue>(new RespValue.Error("ERR", "invalid DB index"));
+        if (targetDbIndex == ctx.Client.SelectedDatabase)
+            return ValueTask.FromResult<RespValue>(new RespValue.Error("ERR", "source and destination objects are the same"));
+
+        var entry = ctx.Database.GetEntry(key);
+        if (entry == null)
+            return ValueTask.FromResult(RespValue.Zero);
+
+        var targetDb = _store.GetDatabase(targetDbIndex);
+        if (targetDb.KeyExists(key))
+            return ValueTask.FromResult(RespValue.Zero);
+
+        targetDb.SetEntry(key, entry);
+        ctx.Database.RemoveEntry(key);
+        return ValueTask.FromResult(RespValue.One);
     }
 
     private static ValueTask<RespValue> Wait(CommandContext ctx)

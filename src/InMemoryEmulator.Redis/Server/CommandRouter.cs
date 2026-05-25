@@ -30,6 +30,7 @@ internal sealed class CommandRouter
         var hll = new HyperLogLogCommands();
         var geo = new GeoCommands();
         var streams = new StreamCommands();
+        var bitmaps = new BitmapCommands();
         var scripting = new ScriptingCommands(this);
         _scripting = scripting;
 
@@ -78,6 +79,15 @@ internal sealed class CommandRouter
         Register("SUBSTR", strings);
         Register("LCS", strings);
 
+        // Bitmap commands
+        Register("SETBIT", bitmaps);
+        Register("GETBIT", bitmaps);
+        Register("BITCOUNT", bitmaps);
+        Register("BITOP", bitmaps);
+        Register("BITPOS", bitmaps);
+        Register("BITFIELD", bitmaps);
+        Register("BITFIELD_RO", bitmaps);
+
         // Key commands
         Register("DEL", keys);
         Register("UNLINK", keys);
@@ -105,6 +115,7 @@ internal sealed class CommandRouter
         Register("SORT", keys);
         Register("SORT_RO", keys);
         Register("WAIT", keys);
+        Register("MOVE", keys);
 
         // Hash commands
         Register("HSET", hashes);
@@ -123,6 +134,19 @@ internal sealed class CommandRouter
         Register("HRANDFIELD", hashes);
         Register("HSCAN", hashes);
         Register("HSTRLEN", hashes);
+        // Redis 7.4 per-field expiry commands
+        Register("HEXPIRE", hashes);
+        Register("HPEXPIRE", hashes);
+        Register("HEXPIREAT", hashes);
+        Register("HPEXPIREAT", hashes);
+        Register("HTTL", hashes);
+        Register("HPTTL", hashes);
+        Register("HEXPIRETIME", hashes);
+        Register("HPEXPIRETIME", hashes);
+        Register("HPERSIST", hashes);
+        Register("HGETDEL", hashes);
+        Register("HGETEX", hashes);
+        Register("HSETEX", hashes);
 
         // List commands
         Register("LPUSH", lists);
@@ -145,6 +169,8 @@ internal sealed class CommandRouter
         Register("BRPOP", lists);
         Register("BLMOVE", lists);
         Register("BLMPOP", lists);
+        Register("LMPOP", lists);
+        Register("BRPOPLPUSH", lists);
 
         // Set commands
         Register("SADD", sets);
@@ -192,6 +218,15 @@ internal sealed class CommandRouter
         Register("ZRANGESTORE", sortedSets);
         Register("BZPOPMIN", sortedSets);
         Register("BZPOPMAX", sortedSets);
+        Register("ZREMRANGEBYLEX", sortedSets);
+        Register("ZREMRANGEBYRANK", sortedSets);
+        Register("ZREMRANGEBYSCORE", sortedSets);
+        Register("ZDIFF", sortedSets);
+        Register("ZUNION", sortedSets);
+        Register("ZINTER", sortedSets);
+        Register("ZINTERCARD", sortedSets);
+        Register("ZMPOP", sortedSets);
+        Register("BZMPOP", sortedSets);
 
         // Pub/Sub commands
         Register("SUBSCRIBE", pubSubCmds);
@@ -202,6 +237,7 @@ internal sealed class CommandRouter
         Register("PUBSUB", pubSubCmds);
         Register("SSUBSCRIBE", pubSubCmds);
         Register("SUNSUBSCRIBE", pubSubCmds);
+        Register("SPUBLISH", pubSubCmds);
 
         // Transaction commands
         Register("MULTI", transactions);
@@ -222,6 +258,10 @@ internal sealed class CommandRouter
         Register("GEOPOS", geo);
         Register("GEOSEARCH", geo);
         Register("GEOSEARCHSTORE", geo);
+        Register("GEORADIUS", geo);
+        Register("GEORADIUS_RO", geo);
+        Register("GEORADIUSBYMEMBER", geo);
+        Register("GEORADIUSBYMEMBER_RO", geo);
 
         // Stream commands
         Register("XADD", streams);
@@ -238,6 +278,7 @@ internal sealed class CommandRouter
         Register("XPENDING", streams);
         Register("XCLAIM", streams);
         Register("XAUTOCLAIM", streams);
+        Register("XSETID", streams);
 
         // Scripting commands
         Register("EVAL", scripting);
