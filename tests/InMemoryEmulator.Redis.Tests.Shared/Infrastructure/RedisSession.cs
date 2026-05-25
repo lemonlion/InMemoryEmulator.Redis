@@ -20,7 +20,7 @@ public sealed class RedisSession : IAsyncLifetime
         if (Target == TestTarget.Docker)
         {
             _container = new RedisBuilder()
-                .WithImage("redis:7-alpine")
+                .WithImage("redis:latest")
                 .Build();
             await _container.StartAsync();
             DockerConnectionString = _container.GetConnectionString();

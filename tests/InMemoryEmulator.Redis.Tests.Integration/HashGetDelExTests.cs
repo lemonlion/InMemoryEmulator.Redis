@@ -6,13 +6,12 @@ namespace InMemoryEmulator.Redis.Tests.Integration;
 
 /// <summary>
 /// Tests for HGETDEL, HGETEX, and HSETEX — Redis 8.0+ commands.
-/// Marked InMemoryOnly because redis:7-alpine does not support these commands.
 /// Ref: https://redis.io/docs/latest/commands/hgetdel/
 /// Ref: https://redis.io/docs/latest/commands/hgetex/
 /// Ref: https://redis.io/docs/latest/commands/hsetex/
 /// </summary>
 [Collection(IntegrationCollection.Name)]
-[Trait(TestTraits.Target, TestTraits.InMemoryOnly)]
+[Trait(TestTraits.Target, TestTraits.All)]
 public class HashGetDelExTests : IAsyncLifetime
 {
     private readonly RedisSession _session;
