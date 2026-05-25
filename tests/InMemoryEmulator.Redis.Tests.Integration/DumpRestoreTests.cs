@@ -5,7 +5,7 @@ using Xunit;
 namespace InMemoryEmulator.Redis.Tests.Integration;
 
 [Collection(IntegrationCollection.Name)]
-[Trait(TestTraits.Target, TestTraits.InMemoryOnly)]
+[Trait(TestTraits.Target, TestTraits.All)]
 public class DumpRestoreTests : IAsyncLifetime
 {
     private readonly RedisSession _session;
