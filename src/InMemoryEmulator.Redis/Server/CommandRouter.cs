@@ -144,6 +144,7 @@ internal sealed class CommandRouter
         Register("BLPOP", lists);
         Register("BRPOP", lists);
         Register("BLMOVE", lists);
+        Register("BLMPOP", lists);
 
         // Set commands
         Register("SADD", sets);

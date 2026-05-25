@@ -29,6 +29,7 @@ internal sealed class ListCommands : ICommandHandler
             "BLPOP" => BLPop(context),
             "BRPOP" => BRPop(context),
             "BLMOVE" => BLMove(context),
+            "BLMPOP" => BLMPop(context),
             _ => ValueTask.FromResult<RespValue>(new RespValue.Error("ERR", $"unknown command '{context.CommandName}'"))
         };
     }
@@ -481,6 +482,85 @@ internal sealed class ListCommands : ICommandHandler
                 else ctx.Database.IncrementVersion(readyKey);
                 return new RespValue.Array(new RespValue[] { RespValue.FromBulkString(readyKey), new RespValue.BulkString(val) });
             }
+        }
+        catch (OperationCanceledException) { }
+
+        return RespValue.NullArray;
+    }
+
+    // Ref: https://redis.io/docs/latest/commands/blmpop/
+    //   "BLMPOP is the blocking variant of the LMPOP command."
+    //   Syntax: BLMPOP timeout numkeys key [key ...] LEFT|RIGHT [COUNT count]
+    //   Returns: null on timeout, or [key, [elements...]]
+    private static async ValueTask<RespValue> BLMPop(CommandContext ctx)
+    {
+        var timeoutSeconds = ctx.GetArgDouble(0);
+        var numKeys = (int)ctx.GetArgLong(1);
+        var keys = new string[numKeys];
+        for (int i = 0; i < numKeys; i++)
+            keys[i] = ctx.GetArgString(2 + i);
+
+        var directionIndex = 2 + numKeys;
+        var direction = ctx.GetArgString(directionIndex).ToUpperInvariant();
+        bool isLeft = direction == "LEFT";
+
+        int count = 1;
+        for (int i = directionIndex + 1; i < ctx.Arguments.Length; i++)
+        {
+            var opt = ctx.GetArgString(i).ToUpperInvariant();
+            if (opt == "COUNT" && i + 1 < ctx.Arguments.Length)
+            {
+                count = (int)ctx.GetArgLong(i + 1);
+                i++;
+            }
+        }
+
+        RespValue? TryPop()
+        {
+            foreach (var key in keys)
+            {
+                var entry = ctx.Database.GetTyped<RedisList>(key);
+                if (entry != null && entry.Items.Count > 0)
+                {
+                    var results = new List<RespValue>();
+                    for (int j = 0; j < count && entry.Items.Count > 0; j++)
+                    {
+                        if (isLeft)
+                        {
+                            results.Add(new RespValue.BulkString(entry.Items.First!.Value));
+                            entry.Items.RemoveFirst();
+                        }
+                        else
+                        {
+                            results.Add(new RespValue.BulkString(entry.Items.Last!.Value));
+                            entry.Items.RemoveLast();
+                        }
+                    }
+                    if (entry.Items.Count == 0) ctx.Database.RemoveEntry(key);
+                    else ctx.Database.IncrementVersion(key);
+                    return new RespValue.Array(new RespValue[]
+                    {
+                        RespValue.FromBulkString(key),
+                        new RespValue.Array(results.ToArray())
+                    });
+                }
+            }
+            return null;
+        }
+
+        var immediate = TryPop();
+        if (immediate != null) return immediate;
+
+        if (timeoutSeconds == 0) timeoutSeconds = 5;
+        var timeout = TimeSpan.FromSeconds(timeoutSeconds);
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ctx.CancellationToken);
+        cts.CancelAfter(timeout);
+
+        try
+        {
+            var readyKey = await ctx.Database.WaitForKeyChangeAsync(keys, cts.Token);
+            var result = TryPop();
+            if (result != null) return result;
         }
         catch (OperationCanceledException) { }
 
